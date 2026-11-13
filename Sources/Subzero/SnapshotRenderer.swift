@@ -34,6 +34,21 @@ enum SnapshotRenderer {
         return (engine, cursor.id, chrome.id, claude.id)
     }
 
+    private static func cursorProcesses(stopped: Bool) -> [ProcessRecord] {
+        let app = "/Applications/Cursor.app/Contents"
+        let helper = "\(app)/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper"
+        return [
+            ProcessRecord(pid: 1201, ppid: 1, name: "Cursor", path: "\(app)/MacOS/Cursor", isStopped: stopped),
+            ProcessRecord(pid: 1207, ppid: 1201, name: "Cursor Helper (G", path: "\(app)/Frameworks/Cursor Helper (GPU).app/Contents/MacOS/Cursor Helper (GPU)", isStopped: stopped),
+            ProcessRecord(pid: 1215, ppid: 1201, name: "Cursor Helper (R", path: "\(app)/Frameworks/Cursor Helper (Renderer).app/Contents/MacOS/Cursor Helper (Renderer)", isStopped: stopped),
+            ProcessRecord(pid: 1233, ppid: 1201, name: "Cursor Helper", path: helper, isStopped: stopped),
+            ProcessRecord(pid: 2310, ppid: 1233, name: "zsh", path: "/bin/zsh", isStopped: stopped),
+            ProcessRecord(pid: 2388, ppid: 2310, name: "node", path: "/opt/homebrew/bin/node",
+                          arguments: ["node", "node_modules/.bin/vite"], isStopped: stopped),
+            ProcessRecord(pid: 2402, ppid: 2310, name: "git", path: "/usr/bin/git", isStopped: stopped),
+        ]
+    }
+
     private static func render(to dir: URL) {
         let nl = IPAddress("185.10.10.10")!
         let ru = IPAddress("95.165.10.20")!
@@ -61,11 +76,31 @@ enum SnapshotRenderer {
                 appStates: [cursor: .frozen, chrome: .running, claude: .frozen],
                 frozenRuleIDs: [cursor, claude],
                 overrides: [chrome],
-                killDeadline: Date().addingTimeInterval(187)
+                killDeadline: Date().addingTimeInterval(187),
+                appProcesses: [
+                    cursor: cursorProcesses(stopped: true),
+                    chrome: [ProcessRecord(pid: 812, ppid: 1, name: "Google Chrome", path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")],
+                    claude: [
+                        ProcessRecord(pid: 4120, ppid: 3990, name: "node", path: "/opt/homebrew/bin/node",
+                                      arguments: ["node", "/Users/me/.local/bin/claude"], isStopped: true),
+                        ProcessRecord(pid: 4188, ppid: 4120, name: "rg", path: "/opt/homebrew/bin/rg", isStopped: true),
+                    ],
+                ],
+                expandedApps: [cursor]
             )
             scenarios.append(("menu-blocked", engine))
         }
         // Throw frames are built right before capture: the animation is time-based.
+        func thawEngine(age: TimeInterval) -> GuardEngine {
+            let (engine, cursor, chrome, _) = makeEngine()
+            engine.debugApply(
+                snapshot: NetworkSnapshot(ipv4: .agreed(nl, votes: 4), ipv6: .none, countries: [nl: "NL"]),
+                verdict: .allowed(nl),
+                appStates: [cursor: .running, chrome: .running],
+                lastHit: ArenaHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .thaw)
+            )
+            return engine
+        }
         func throwEngine(age: TimeInterval) -> GuardEngine {
             let (engine, cursor, chrome, _) = makeEngine()
             engine.debugApply(
@@ -75,13 +110,15 @@ enum SnapshotRenderer {
                 frozenRuleIDs: [cursor, chrome],
                 killDeadline: Date().addingTimeInterval(299),
                 // Capture happens ~0.4 s after the view is installed.
-                lastHit: ArenaHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), shatter: false)
+                lastHit: ArenaHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .freeze)
             )
             return engine
         }
         let timed: [(String, () -> GuardEngine)] = [
             ("menu-throw", { throwEngine(age: 0.3) }),
             ("menu-impact", { throwEngine(age: 0.95) }),
+            ("menu-thaw-throw", { thawEngine(age: 0.55) }),
+            ("menu-thaw-melt", { thawEngine(age: 1.3) }),
         ]
         do {
             let (engine, cursor, chrome, _) = makeEngine()

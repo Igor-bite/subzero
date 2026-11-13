@@ -63,6 +63,7 @@ private struct HeaderCard: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.top, 14)
+                .opacity(thawActive ? 0 : 1)
                 Spacer(minLength: 0)
                 refreshButton
                     .padding(.bottom, 26)
@@ -72,7 +73,7 @@ private struct HeaderCard: View {
         .padding(.horizontal, 10)
         .padding(.top, 9)
         .overlay {
-            if let hit = engine.lastHit, engine.now.timeIntervalSince(hit.at) < IceBall.total + 1 {
+            if let hit = engine.lastHit, engine.now.timeIntervalSince(hit.at) < hit.duration + 1 {
                 // Hand of the cast pose: sprite pixel (22, 16) at scale 3, below the HUD row.
                 ArenaThrow(hit: hit, hand: CGPoint(x: 10 + 22 * 3, y: 9 + 34 + 4 + 18 * 3))
             }
@@ -118,12 +119,18 @@ private struct HeaderCard: View {
     /// An ice ball or its impact is on screen (the target sits where the refresh button is).
     private var hitActive: Bool {
         guard let hit = engine.lastHit else { return false }
-        return engine.now.timeIntervalSince(hit.at) < IceBall.total
+        return engine.now.timeIntervalSince(hit.at) < hit.duration
+    }
+
+    /// The fire spirit owns the arena while it melts the ice: the banner steps aside.
+    private var thawActive: Bool {
+        guard let hit = engine.lastHit, hit.kind == .thaw else { return false }
+        return engine.now.timeIntervalSince(hit.at) < hit.duration
     }
 
     /// The golem holds the throwing pose while the ball is in the air and a moment after.
     private func throwing(at date: Date) -> Bool {
-        guard let hit = engine.lastHit else { return false }
+        guard let hit = engine.lastHit, hit.kind != .thaw else { return false }
         let t = date.timeIntervalSince(hit.at)
         return t >= -0.05 && t < IceBall.flight + 0.35
     }
@@ -495,18 +502,127 @@ private struct AppsCard: View {
     private func rows(_ apps: [ControlledApp]) -> some View {
         VStack(spacing: 8) {
             ForEach(apps) { app in
-                HStack(spacing: 8) {
-                    AppIcon(kind: app.kind, size: 26)
-                        .saturation(app.state == .frozen ? 0.2 : 1)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.name).font(.callout.weight(.medium)).lineLimit(1)
-                        AppStateBadge(app: app)
+                let processes = app.state == .notRunning ? [] : engine.appProcesses[app.id] ?? []
+                let expanded = !processes.isEmpty && engine.expandedApps.contains(app.id)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        AppIcon(kind: app.kind, size: 26)
+                            .saturation(app.state == .frozen ? 0.2 : 1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(app.name).font(.callout.weight(.medium)).lineLimit(1)
+                                if !processes.isEmpty {
+                                    ProcessToggle(processes: processes, expanded: expanded) {
+                                        withAnimation(.snappy(duration: 0.2)) {
+                                            if expanded {
+                                                engine.expandedApps.remove(app.id)
+                                            } else {
+                                                engine.expandedApps.insert(app.id)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            AppStateBadge(app: app)
+                        }
+                        Spacer(minLength: 4)
+                        AppControls(app: app, engine: engine)
                     }
-                    Spacer(minLength: 4)
-                    AppControls(app: app, engine: engine)
+                    if expanded {
+                        ProcessList(processes: processes)
+                            .padding(.leading, 34)   // under the name: icon 26 + spacing 8
+                            .transition(.opacity)
+                    }
                 }
             }
         }
+    }
+}
+
+/// "14 процессов ›": count of caught processes, expands the list.
+private struct ProcessToggle: View {
+    let processes: [ProcessRecord]
+    let expanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        let stopped = processes.filter(\.isStopped).count
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(verbatim: "\(processes.count) \(Self.noun(processes.count))")
+                if stopped > 0 && stopped < processes.count {
+                    Text(verbatim: "· \(stopped)")
+                    Image(systemName: "snowflake").foregroundStyle(Palette.frozen)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(expanded ? "Скрыть процессы" : "Показать процессы программы и её потомков")
+    }
+
+    static func noun(_ n: Int) -> String {
+        let mod100 = n % 100, mod10 = n % 10
+        if (11...14).contains(mod100) { return "процессов" }
+        switch mod10 {
+        case 1: return "процесс"
+        case 2...4: return "процесса"
+        default: return "процессов"
+        }
+    }
+}
+
+/// Process tree of one app: name, pid, real kernel state (stopped or running).
+private struct ProcessList: View {
+    let processes: [ProcessRecord]
+    private static let rowHeight: CGFloat = 17
+    private static let visibleRows = 8
+
+    var body: some View {
+        let nodes = ProcessTree.flatten(processes)
+        let list = VStack(alignment: .leading, spacing: 0) {
+            ForEach(nodes, id: \.record.pid) { node in
+                row(node)
+            }
+        }
+        Group {
+            if nodes.count > Self.visibleRows {
+                ScrollView { list }
+                    .frame(height: (CGFloat(Self.visibleRows) + 0.5) * Self.rowHeight)
+            } else {
+                list
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(Chamfer(cut: 4).fill(Arcade.night.opacity(0.45)))
+    }
+
+    private func row(_ node: ProcessTree.Node) -> some View {
+        let record = node.record
+        return HStack(spacing: 5) {
+            Image(systemName: record.isStopped ? "snowflake" : "circle.fill")
+                .font(.system(size: record.isStopped ? 9 : 5, weight: .bold))
+                .foregroundStyle(record.isStopped ? Palette.frozen : Palette.running)
+                .frame(width: 10)
+            Text(record.displayName)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            Text(verbatim: String(record.pid))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, CGFloat(min(node.depth, 4)) * 10)
+        .frame(height: Self.rowHeight)
+        .help(record.path ?? record.name)
     }
 }
 

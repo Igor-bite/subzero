@@ -520,6 +520,14 @@ struct ArenaThrow: View {
     let hand: CGPoint
 
     var body: some View {
+        if hit.kind == .thaw {
+            ThawScene(hit: hit)
+        } else {
+            iceThrow
+        }
+    }
+
+    private var iceThrow: some View {
         TimelineView(.periodic(from: hit.at, by: 1 / 30)) { timeline in
             let t = timeline.date.timeIntervalSince(hit.at)
             GeometryReader { geo in
@@ -622,5 +630,242 @@ struct SegmentBar: View {
         .frame(height: 12)
         .background(Arcade.night)
         .overlay(Rectangle().strokeBorder(color.opacity(0.6), lineWidth: 1))
+    }
+}
+
+// MARK: - Fire spirit and thaw
+
+extension ArenaHit {
+    /// How long the scene for this hit stays on screen.
+    var duration: TimeInterval { kind == .thaw ? Thaw.total : IceBall.total }
+}
+
+/// Ember: an original fire spirit that comes in to melt the ice when apps are released.
+enum Ember {
+    static let palette: [Character: Color] = [
+        "k": Color(red: 0.10, green: 0.03, blue: 0.02),
+        "r": Color(red: 0.54, green: 0.10, blue: 0.06),
+        "o": Color(red: 0.88, green: 0.33, blue: 0.10),
+        "y": Color(red: 1.0, green: 0.71, blue: 0.18),
+        "w": Color(red: 1.0, green: 0.95, blue: 0.69),
+        "e": Color.white,
+        "s": Color(red: 0.23, green: 0.05, blue: 0.03),
+        "p": Color(red: 0.16, green: 0.04, blue: 0.02),
+    ]
+
+    static let idle = PixelSprite(rows: [
+        ".........kyk.kyk..k.........",
+        ".........kykkyoykkyk........",
+        "........kyoykywrkyoyk.......",
+        "........kywrkyorkywrk.......",
+        "........kyrrkyrrkyrrk.......",
+        "........kkkkokkkokkkk.......",
+        ".......kyoooooooooooyk......",
+        ".......kywooooooooowrk......",
+        ".......kyooooooooooork......",
+        ".......kyosssssssssork......",
+        ".......kyoseessseesork......",
+        ".......kyospessspesork......",
+        ".......kyosssssssssork......",
+        ".......kyossyyyyyssork......",
+        "......kkkkkooooooooork......",
+        ".....kyyyyykrrrrrrrrrk......",
+        ".....kyooorkkkykkkkkkyk.....",
+        ".....kyooorkoywyoorkork.....",
+        ".....kyooorkooyooorkork.....",
+        ".....kyooorkoooooorkooyk....",
+        "....kyoooorkoooooorkyork....",
+        "....kyooorrkoooooorkyrrk....",
+        "....kyoorkkooooooorkkkk.....",
+        "....kyrrrkyrrrrrrrrk........",
+        ".....kkkk.kkkykkkkk.........",
+        "..........kyooooork.........",
+        "...........kyooork..........",
+        "...........kyoyork..........",
+        "...........kyroork..........",
+        "............kkyork..........",
+        ".............kyyrk..........",
+        "..............kkyyk.........",
+        "...............kyrk.........",
+        "................kk..........",
+    ], palette: palette)
+
+    static let toss = PixelSprite(rows: [
+        ".........kyk.kyk..k.........",
+        ".........kykkyoykkyk........",
+        "........kyoykywrkyoyk.......",
+        "........kywrkyorkywrk.......",
+        "........kyrrkyrrkyrrk.......",
+        "........kkkkokkkokkkk.......",
+        ".......kyoooooooooooyk......",
+        ".......kywooooooooowrk......",
+        ".......kyooooooooooork......",
+        ".......kyosssssssssork......",
+        ".......kyoseessseesork......",
+        ".......kyospessspesork......",
+        "kkkkk..kyosssssssssork......",
+        "yyyyyk.kyossyyyyyssork......",
+        "ywoorkkkkkkooooooooork......",
+        "yoworkyyyyykrrrrrrrrrk......",
+        "yooorkoooorkkkykkkkkkyk.....",
+        "yooorkoooorkoywyoorkork.....",
+        "yrrrrkrrrrrkooyooorkork.....",
+        "kkkkkkkkkkkooooooorkooyk....",
+        ".........kyooooooorkyork....",
+        ".........kyooooooorkyrrk....",
+        ".........kyooooooorkkkk.....",
+        ".........kyrrrrrrrrk........",
+        "..........kkkykkkkk.........",
+        "..........kyooooork.........",
+        "...........kyooork..........",
+        "...........kyoyork..........",
+        "...........kyroork..........",
+        "............kkyork..........",
+        ".............kyyrk..........",
+        "..............kkyyk.........",
+        "...............kyrk.........",
+        "................kk..........",
+    ], palette: palette)
+
+    static let fireball = PixelSprite(rows: [
+        "..kkkk..",
+        ".kwwyok.",
+        "kwyyyork",
+        "kyyyyrrk",
+        "kyoyyrrk",
+        "koooorrk",
+        ".korrrk.",
+        "..kkkk..",
+    ], palette: palette)
+}
+
+enum Thaw {
+    static let enter: TimeInterval = 0.35
+    static let flight: TimeInterval = 0.4
+    static let melt: TimeInterval = 1.2
+    static let exit: TimeInterval = 0.45
+    static var total: TimeInterval { enter + flight + melt + exit }
+}
+
+/// Ember flies in, throws a fireball at the frozen app and the ice melts away.
+private struct ThawScene: View {
+    let hit: ArenaHit
+
+    var body: some View {
+        TimelineView(.periodic(from: hit.at, by: 1 / 30)) { timeline in
+            let t = timeline.date.timeIntervalSince(hit.at)
+            GeometryReader { geo in
+                let w = geo.size.width, h = geo.size.height
+                let target = CGPoint(x: (w * 0.58).rounded(), y: h - 44)
+                let restX = w - 44
+                let spiritY = h - 66
+                let throwAt = Thaw.enter
+                let hitAt = throwAt + Thaw.flight
+                let leaveAt = hitAt + Thaw.melt
+                let x: CGFloat = t < throwAt
+                    ? restX + (w + 50 - restX) * CGFloat(1 - ease(t / Thaw.enter))
+                    : (t < leaveAt ? restX : restX + (w + 50 - restX) * CGFloat(ease((t - leaveAt) / Thaw.exit)))
+                let hover = (Int(t / 0.25) % 2 == 0) ? 0 : CGFloat(3)
+                let hand = CGPoint(x: x - 42 + 3, y: spiritY - 51 + 45 + hover)
+                ZStack(alignment: .topLeading) {
+                    // The frozen app, then the melt.
+                    if t < Thaw.total {
+                        MeltView(kind: hit.kinds.first, melt: max(0, min(1, (t - hitAt) / Thaw.melt)), elapsed: t - hitAt)
+                            .opacity(t > leaveAt ? max(0, 1 - (t - leaveAt) / Thaw.exit) : 1)
+                            .position(target)
+                    }
+                    if t >= throwAt, t < hitAt {
+                        fireball(progress: (t - throwAt) / Thaw.flight, from: hand, to: target)
+                    }
+                    if t >= 0, t < Thaw.total {
+                        SpriteView(sprite: t >= throwAt - 0.05 && t < hitAt + 0.25 ? Ember.toss : Ember.idle, scale: 3)
+                            .shadow(color: Arcade.ember.opacity(0.8), radius: 8)
+                            .position(x: x, y: spiritY + hover)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func ease(_ p: Double) -> Double {
+        let c = max(0, min(1, p))
+        return 1 - (1 - c) * (1 - c)
+    }
+
+    private func fireball(progress p: Double, from a: CGPoint, to b: CGPoint) -> some View {
+        let x = a.x + (b.x - a.x) * p
+        let y = a.y + (b.y - a.y) * p - 10 * 4 * p * (1 - p)
+        return ZStack {
+            ForEach(1..<6) { i in
+                let q = max(0, p - Double(i) * 0.05)
+                Rectangle()
+                    .fill((i % 2 == 0 ? Arcade.gold : Arcade.ember).opacity(0.85 - Double(i) * 0.14))
+                    .frame(width: CGFloat(7 - i), height: CGFloat(7 - i))
+                    .position(x: a.x + (b.x - a.x) * q, y: a.y + (b.y - a.y) * q - 10 * 4 * q * (1 - q) + CGFloat(i % 2 == 0 ? -2 : 2))
+            }
+            SpriteView(sprite: Ember.fireball, scale: 3)
+                .rotationEffect(.degrees(Int(p * 8) % 2 == 0 ? 0 : 90))
+                .shadow(color: Arcade.ember, radius: 7)
+                .position(x: x, y: y)
+        }
+    }
+}
+
+/// App in a block of ice that melts from the top: drips, steam and sparks.
+private struct MeltView: View {
+    let kind: AppRuleKind?
+    /// 0 = solid ice, 1 = fully melted.
+    let melt: Double
+    /// Seconds since the fireball hit (negative before it).
+    let elapsed: TimeInterval
+
+    var body: some View {
+        let ice = 1 - melt
+        ZStack {
+            if let kind {
+                AppIcon(kind: kind, size: 30)
+                    .saturation(0.25 + 0.75 * melt)
+            }
+            if ice > 0 {
+                Chamfer(cut: 5)
+                    .fill(LinearGradient(colors: [Arcade.frost.opacity(0.55), Arcade.ice.opacity(0.35), Arcade.iceDeep.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .overlay(Chamfer(cut: 5).strokeBorder(Arcade.frost, lineWidth: 1.5))
+                    .frame(width: 42, height: max(4, 42 * ice))
+                    .frame(height: 42, alignment: .bottom)
+            }
+            if elapsed >= 0 {
+                // Drips falling off the block.
+                ForEach(0..<6) { i in
+                    let phase = (elapsed * 1.6 + Double(i) * 0.17).truncatingRemainder(dividingBy: 1)
+                    Rectangle()
+                        .fill(Arcade.ice)
+                        .frame(width: 2, height: 4)
+                        .offset(x: CGFloat(i * 7 - 18), y: 21 + CGFloat(phase * 12))
+                        .opacity(melt < 1 ? 0.9 * (1 - phase) : 0)
+                }
+                // Steam rising.
+                ForEach(0..<5) { i in
+                    let phase = (elapsed * 0.9 + Double(i) * 0.21).truncatingRemainder(dividingBy: 1)
+                    Rectangle()
+                        .fill(.white.opacity(0.55 * (1 - phase)))
+                        .frame(width: CGFloat(3 + i % 3), height: CGFloat(3 + i % 3))
+                        .offset(x: CGFloat(i * 8 - 16) + CGFloat(sin(phase * 6 + Double(i)) * 3), y: -20 - CGFloat(phase * 26))
+                }
+                // Sparks from the impact.
+                ForEach(0..<8) { i in
+                    let angle = Double(i) / 8 * 2 * .pi
+                    let d = 8 + 26 * min(1, elapsed / 0.35)
+                    Rectangle()
+                        .fill(i % 2 == 0 ? Arcade.gold : Arcade.ember)
+                        .frame(width: 3, height: 3)
+                        .offset(x: cos(angle) * d, y: sin(angle) * d)
+                        .opacity(max(0, 1 - elapsed / 0.6))
+                }
+                PixelText(text: "THAW!", scale: 2, colors: [Color.white, Arcade.gold, Arcade.ember])
+                    .offset(y: -36 - min(6, elapsed * 10))
+                    .opacity(min(1, elapsed / 0.15))
+            }
+        }
     }
 }

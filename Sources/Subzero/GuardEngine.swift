@@ -23,13 +23,18 @@ struct ControlledApp: Identifiable, Equatable {
     let isOverridden: Bool
 }
 
-/// A hit in the arena: the golem threw an ice ball at apps (freeze) or shattered them (kill).
+/// A moment in the arena: the golem freezes apps with an ice ball, shatters them on a kill,
+/// or the fire spirit melts the ice when they are released.
 struct ArenaHit: Equatable {
+    enum Kind: Equatable { case freeze, shatter, thaw }
+
     let id = UUID()
     let names: [String]
     let kinds: [AppRuleKind]
     let at: Date
-    let shatter: Bool
+    let kind: Kind
+
+    var shatter: Bool { kind == .shatter }
 }
 
 /// An app the user froze by hand. Persisted, so it stays frozen across restarts.
@@ -76,6 +81,10 @@ final class GuardEngine {
     /// Protected rules the user unfroze during the current block.
     private(set) var overrides: Set<UUID> = []
     private(set) var appStates: [UUID: ControlledApp.State] = [:]
+    /// Processes caught per subject (the app and all its descendants), refreshed every scan.
+    private(set) var appProcesses: [UUID: [ProcessRecord]] = [:]
+    /// Apps whose process list is expanded in the menu. UI state, not persisted.
+    var expandedApps: Set<UUID> = []
     private(set) var lastError: String?
     /// Last freeze/kill, drives the ice ball animation in the menu.
     private(set) var lastHit: ArenaHit?
@@ -271,7 +280,7 @@ final class GuardEngine {
             saveManualFreezes()
         }
         reconcile(force: true)
-        lastHit = ArenaHit(names: [name], kinds: [kind], at: Date(), shatter: false)
+        lastHit = ArenaHit(names: [name], kinds: [kind], at: Date(), kind: .freeze)
     }
 
     func freeze(_ app: ControlledApp) {
@@ -286,6 +295,9 @@ final class GuardEngine {
             overrides.insert(app.id)
         }
         reconcile(force: true)
+        if app.state == .frozen {
+            lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .thaw)
+        }
     }
 
     /// SIGKILL every process of the app right now.
@@ -297,7 +309,7 @@ final class GuardEngine {
         ProcessSignaler.send(SIGKILL, to: victims.keys)
         frozenPIDs.subtract(victims.keys)
         reconcile(force: true)
-        lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), shatter: true)
+        lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .shatter)
     }
 
     // MARK: Check loop
@@ -421,10 +433,14 @@ final class GuardEngine {
     }
 
     private func currentTargets() -> [Int32: UUID] {
+        scan().targets
+    }
+
+    private func scan() -> (targets: [Int32: UUID], processes: [ProcessRecord]) {
         let subjects = subjects
-        guard !subjects.isEmpty else { return [:] }
+        guard !subjects.isEmpty else { return ([:], []) }
         let processes = ProcessScanner.snapshot(includeInterpreterArguments: subjects.contains { $0.kind.needsArguments })
-        return ProcessMatcher.targets(processes: processes, rules: subjects, excludingPIDs: [getpid()])
+        return (ProcessMatcher.targets(processes: processes, rules: subjects, excludingPIDs: [getpid()]), processes)
     }
 
     private func tick() {
@@ -461,7 +477,9 @@ final class GuardEngine {
         guard force || busy || Date().timeIntervalSince(lastScan) >= 1.9 else { return }
         lastScan = Date()
 
-        var targets = currentTargets()
+        let scanned = scan()
+        var targets = scanned.targets
+        let processes = scanned.processes
         let autoIDs = Set(enabledRules.map(\.id)).subtracting(overrides)
         let manualIDs = manualSubjectIDs
 
@@ -475,7 +493,7 @@ final class GuardEngine {
                 let ids = Set(victims.values)
                 let names = config.apps.filter { ids.contains($0.id) }.map(\.name)
                 let killed = config.apps.filter { ids.contains($0.id) }
-                lastHit = ArenaHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), shatter: true)
+                lastHit = ArenaHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), kind: .shatter)
                 let why = killsImmediately ? "Утечка DNS" : "Разрешённый IP не вернулся"
                 notifier.post(title: "K.O. — программы закрыты", body: "\(why): \(names.joined(separator: ", "))")
             }
@@ -502,6 +520,16 @@ final class GuardEngine {
         if !toContinue.isEmpty { ProcessSignaler.send(SIGCONT, to: toContinue) }
         frozenPIDs = desired
 
+        // Kernel state comes from the scan, taken before the signals above:
+        // patch in what we just sent, the next scan reports the real state.
+        var processesByID: [UUID: [ProcessRecord]] = [:]
+        for record in processes {
+            guard let id = targets[record.pid] else { continue }
+            let stopped = toStop.contains(record.pid) ? true : toContinue.contains(record.pid) ? false : record.isStopped
+            processesByID[id, default: []].append(record.with(isStopped: stopped))
+        }
+        if appProcesses != processesByID { appProcesses = processesByID }
+
         var states: [UUID: ControlledApp.State] = [:]
         for subject in subjects {
             let pids = pidsByID[subject.id] ?? []
@@ -523,7 +551,11 @@ final class GuardEngine {
         let justFrozen = newFrozenRules.subtracting(frozenRuleIDs)
         if !justFrozen.isEmpty {
             let hit = config.apps.filter { justFrozen.contains($0.id) }
-            lastHit = ArenaHit(names: hit.map(\.name), kinds: hit.map(\.kind), at: Date(), shatter: false)
+            lastHit = ArenaHit(names: hit.map(\.name), kinds: hit.map(\.kind), at: Date(), kind: .freeze)
+        } else if !blocked, !frozenRuleIDs.isEmpty {
+            // The block is over: apps frozen because of the IP are released.
+            let released = config.apps.filter { frozenRuleIDs.contains($0.id) }
+            lastHit = ArenaHit(names: released.map(\.name), kinds: released.map(\.kind), at: Date(), kind: .thaw)
         }
         if frozenRuleIDs != newFrozenRules { frozenRuleIDs = newFrozenRules }
     }
@@ -553,7 +585,9 @@ final class GuardEngine {
         overrides: Set<UUID> = [],
         pausedUntil: Date? = nil,
         killDeadline: Date? = nil,
-        lastHit: ArenaHit? = nil
+        lastHit: ArenaHit? = nil,
+        appProcesses: [UUID: [ProcessRecord]] = [:],
+        expandedApps: Set<UUID> = []
     ) {
         self.lastHit = lastHit
         self.snapshot = snapshot
@@ -561,6 +595,8 @@ final class GuardEngine {
         self.lastCheck = Date()
         self.networkChangePending = false
         self.appStates = appStates
+        self.appProcesses = appProcesses
+        self.expandedApps = expandedApps
         self.frozenRuleIDs = frozenRuleIDs
         self.manualFreezes = manualFreezes
         self.overrides = overrides

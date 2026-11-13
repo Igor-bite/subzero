@@ -10,13 +10,67 @@ public struct ProcessRecord: Sendable, Equatable {
     public let path: String?
     /// argv (including argv[0]); only filled for interpreters like node/python.
     public let arguments: [String]
+    /// Stopped in the kernel (`SSTOP`), e.g. by our SIGSTOP.
+    public let isStopped: Bool
 
-    public init(pid: Int32, ppid: Int32, name: String, path: String?, arguments: [String] = []) {
+    public init(pid: Int32, ppid: Int32, name: String, path: String?, arguments: [String] = [], isStopped: Bool = false) {
         self.pid = pid
         self.ppid = ppid
         self.name = name
         self.path = path
         self.arguments = arguments
+        self.isStopped = isStopped
+    }
+
+    /// Human-readable name: executable basename (`p_comm` is cut at 16 chars),
+    /// plus the script name for interpreters ("node claude").
+    public var displayName: String {
+        let exe = path.map { ($0 as NSString).lastPathComponent } ?? name
+        guard arguments.count > 1, ProcessMatcher.isInterpreter(exe) || ProcessMatcher.isInterpreter(name),
+              let script = arguments.dropFirst().first(where: { !$0.hasPrefix("-") })
+        else { return exe }
+        return "\(exe) \((script as NSString).lastPathComponent)"
+    }
+
+    public func with(isStopped: Bool) -> ProcessRecord {
+        ProcessRecord(pid: pid, ppid: ppid, name: name, path: path, arguments: arguments, isStopped: isStopped)
+    }
+}
+
+public enum ProcessTree {
+    public struct Node: Sendable, Equatable {
+        public let record: ProcessRecord
+        public let depth: Int
+    }
+
+    /// Depth-first order, parents before children, siblings by pid.
+    /// Records whose parent is not in the set are roots.
+    public static func flatten(_ records: [ProcessRecord]) -> [Node] {
+        let pids = Set(records.map(\.pid))
+        var children: [Int32: [ProcessRecord]] = [:]
+        var roots: [ProcessRecord] = []
+        for r in records {
+            if r.ppid != r.pid, pids.contains(r.ppid) {
+                children[r.ppid, default: []].append(r)
+            } else {
+                roots.append(r)
+            }
+        }
+
+        var result: [Node] = []
+        result.reserveCapacity(records.count)
+        var visited = Set<Int32>()
+        func visit(_ r: ProcessRecord, _ depth: Int) {
+            guard visited.insert(r.pid).inserted else { return }
+            result.append(Node(record: r, depth: depth))
+            for child in (children[r.pid] ?? []).sorted(by: { $0.pid < $1.pid }) {
+                visit(child, depth + 1)
+            }
+        }
+        for r in roots.sorted(by: { $0.pid < $1.pid }) { visit(r, 0) }
+        // Cycles (pid reuse) have no root: emit what is left as roots.
+        for r in records.sorted(by: { $0.pid < $1.pid }) where !visited.contains(r.pid) { visit(r, 0) }
+        return result
     }
 }
 
@@ -137,7 +191,8 @@ public enum ProcessScanner {
                     args = arguments(pid) ?? []
                 }
             }
-            records.append(ProcessRecord(pid: pid, ppid: ppid, name: name, path: path, arguments: args))
+            let stopped = Int32(kp.kp_proc.p_stat) == SSTOP
+            records.append(ProcessRecord(pid: pid, ppid: ppid, name: name, path: path, arguments: args, isStopped: stopped))
         }
         return records
     }
