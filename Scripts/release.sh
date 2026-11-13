@@ -49,7 +49,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 APP_NAME=${APP_NAME:-Freezer}
-BUNDLE_ID=${BUNDLE_ID:-app.freezer.Freezer}
+BUNDLE_ID=${BUNDLE_ID:-com.klyuzhevigor.Freezer}
 CASK_TOKEN=$(tr '[:upper:]' '[:lower:]' <<<"$APP_NAME")
 APP_IDENTITY=${APP_IDENTITY:-}
 NOTARY_PROFILE=${NOTARY_PROFILE:-}

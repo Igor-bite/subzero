@@ -320,3 +320,26 @@ private func proc(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String? = 
     #expect(CountryInfo.flag("nl") == "🇳🇱")
     #expect(CountryInfo.flag("X") == "")
 }
+
+// MARK: - Defaults migration
+
+@Test func defaultsMigrationCopiesMissingKeysOnce() throws {
+    let suite = "FreezerTests.migration.\(UUID().uuidString)"
+    let target = try #require(UserDefaults(suiteName: suite))
+    defer { target.removePersistentDomain(forName: suite) }
+    target.set(false, forKey: "showInDock")
+
+    let legacy: [String: [String: Any]] = [
+        "new.id": ["manualFreezes": Data("[1]".utf8), "showInDock": true],
+        "old.id": ["manualFreezes": Data("[2]".utf8), "onlyOld": 7],
+    ]
+    DefaultsMigration.run(into: target, from: ["new.id", "old.id"]) { legacy[$0] }
+
+    #expect(target.data(forKey: "manualFreezes") == Data("[1]".utf8)) // newer domain wins
+    #expect(target.bool(forKey: "showInDock") == false)                // existing value kept
+    #expect(target.integer(forKey: "onlyOld") == 7)
+
+    target.removeObject(forKey: "onlyOld")
+    DefaultsMigration.run(into: target, from: ["new.id", "old.id"]) { legacy[$0] }
+    #expect(target.object(forKey: "onlyOld") == nil)                   // runs once
+}

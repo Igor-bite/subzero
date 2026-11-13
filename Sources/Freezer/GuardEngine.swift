@@ -97,14 +97,8 @@ final class GuardEngine {
         self.store = store
         self.defaults = defaults
         self.config = store.load()
-        // The app used to be called Karing (bundle id app.karing.Karing): take its manual freezes once.
-        var data = defaults?.data(forKey: Self.manualKey)
-        if data == nil, defaults === UserDefaults.standard,
-           let legacy = UserDefaults(suiteName: "app.karing.Karing")?.data(forKey: Self.manualKey) {
-            data = legacy
-            defaults?.set(legacy, forKey: Self.manualKey)
-        }
-        if let data, let saved = try? JSONDecoder().decode([ManualFreeze].self, from: data) {
+        // Manual freezes from older bundle ids arrive via DefaultsMigration (AppDelegate.init).
+        if let data = defaults?.data(forKey: Self.manualKey), let saved = try? JSONDecoder().decode([ManualFreeze].self, from: data) {
             manualFreezes = saved
         }
     }

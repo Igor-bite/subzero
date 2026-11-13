@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 APP_NAME=${APP_NAME:-Freezer}
-BUNDLE_ID=${BUNDLE_ID:-app.freezer.Freezer}
+BUNDLE_ID=${BUNDLE_ID:-com.klyuzhevigor.Freezer}
 MACOS_MIN_VERSION=${MACOS_MIN_VERSION:-15.0}
 # 0: regular app with a Dock icon (can still be hidden from the Dock in settings).
 MENU_BAR_APP=${MENU_BAR_APP:-0}

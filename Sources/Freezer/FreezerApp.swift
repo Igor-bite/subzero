@@ -74,8 +74,15 @@ enum DockPolicy {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let engine = GuardEngine()
+    let engine: GuardEngine
     private var signalSources: [DispatchSourceSignal] = []
+
+    override init() {
+        // Before GuardEngine reads defaults: bring over values from older bundle ids.
+        DefaultsMigration.run()
+        engine = GuardEngine()
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // One instance only: a second one would fight over SIGSTOP/SIGCONT.
