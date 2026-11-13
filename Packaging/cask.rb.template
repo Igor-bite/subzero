@@ -1,0 +1,25 @@
+cask "@TOKEN@" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/@REPO@/releases/download/v#{version}/@APP_NAME@-#{version}.zip"
+  name "@APP_NAME@"
+  desc "Menu bar kill switch that freezes apps when your IP leaves allowed countries"
+  homepage "https://github.com/@REPO@"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on macos: :sequoia
+
+  app "@APP_NAME@.app"
+
+  uninstall quit: "@BUNDLE_ID@"
+
+  zap trash: [
+    "~/Library/Application Support/@APP_NAME@",
+    "~/Library/Preferences/@BUNDLE_ID@.plist",
+  ]
+end

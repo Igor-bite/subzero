@@ -1,0 +1,8 @@
+.build/
+*.app
+.DS_Store
+.swiftpm/
+dist/
+
+# Reverse-engineering notes on a third-party app, keep out of the public repo
+app-internals.md
