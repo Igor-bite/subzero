@@ -44,13 +44,18 @@ final class WindowOpener {
     static let shared = WindowOpener()
     var action: OpenWindowAction?
 
+    private var settingsWindow: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue.contains(SettingsView.windowID) == true }
+    }
+
+    var isSettingsVisible: Bool { settingsWindow?.isVisible == true }
+
     func openSettings() {
         NSApp.activate()
         if let action {
             action(id: SettingsView.windowID)
-        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains(SettingsView.windowID) == true }) {
-            window.makeKeyAndOrderFront(nil)
         }
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -125,7 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Dock icon click with no window open: show settings.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { WindowOpener.shared.openSettings() }
+        // `flag` is true whenever the menu bar item exists (its windows count as visible),
+        // so check the settings window itself.
+        if !WindowOpener.shared.isSettingsVisible { WindowOpener.shared.openSettings() }
         return true
     }
 
