@@ -174,7 +174,9 @@ enum SnapshotRenderer {
             snapshot: NetworkSnapshot(ipv4: .agreed(fresh, votes: 4), ipv6: .none, countries: [fresh: "NL"]),
             verdict: .allowed(fresh),
             appStates: [cursor: .frozen, chrome: .running, claude: .notRunning],
-            manualFreezes: [ManualFreeze(id: UUID(), name: "Cursor", kind: .bundle(path: "/Applications/Cursor.app")), telegram]
+            manualFreezes: [ManualFreeze(id: UUID(), name: "Cursor", kind: .bundle(path: "/Applications/Cursor.app")), telegram],
+            appProcesses: [cursor: cursorProcesses(stopped: true)],
+            expandedApps: [cursor]
         )
         for (suffix, appearance) in appearances {
             save(AppsTab(engine: engine), width: 600, height: 540, appearance: appearance, to: dir.appendingPathComponent("settings-apps-\(suffix).png"))
@@ -183,6 +185,11 @@ enum SnapshotRenderer {
             save(BehaviorTab(engine: engine), width: 600, height: 900, appearance: appearance, to: dir.appendingPathComponent("settings-behavior-\(suffix).png"))
             save(SettingsView(engine: engine), width: 600, height: 620, appearance: appearance, to: dir.appendingPathComponent("settings-window-\(suffix).png"))
         }
+        // Only IP addresses allowed, no countries: no "nothing allowed" warning.
+        let countries = engine.config.allowedCountries
+        engine.config.allowedCountries = []
+        save(AllowTab(engine: engine), width: 600, height: 540, appearance: appearances[1].1, to: dir.appendingPathComponent("settings-allow-ipsonly-dark.png"))
+        engine.config.allowedCountries = countries
         print("Snapshots written to \(dir.path)")
     }
 

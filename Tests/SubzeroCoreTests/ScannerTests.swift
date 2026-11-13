@@ -82,3 +82,25 @@ private func rec(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String = "?
                 args: ["node", "--no-warnings", "/Users/me/.local/bin/claude", "--resume"]).displayName == "node claude")
     #expect(rec(1, 0, "/usr/bin/python3", name: "python3", args: ["python3"]).displayName == "python3")
 }
+
+@Test func nearestAncestorSkipsForeignOwnedParents() {
+    // iTerm2 (100) → iTermServer (101) → login [root] (102) → zsh (103) → git (104)
+    let parentOf: [Int32: Int32] = [100: 1, 101: 100, 102: 101, 103: 102, 104: 103, 200: 1, 201: 200]
+    let kept: Set<Int32> = [100, 101, 103, 104, 201]
+    #expect(ProcessTree.nearestAncestor(of: 103, in: kept, parentOf: parentOf) == 101)
+    #expect(ProcessTree.nearestAncestor(of: 104, in: kept, parentOf: parentOf) == 103)
+    #expect(ProcessTree.nearestAncestor(of: 101, in: kept, parentOf: parentOf) == 100)
+    // No own ancestor before launchd: keep the direct parent.
+    #expect(ProcessTree.nearestAncestor(of: 201, in: kept, parentOf: parentOf) == 200)
+    // Cycle among foreign processes must terminate.
+    #expect(ProcessTree.nearestAncestor(of: 5, in: [5], parentOf: [5: 6, 6: 7, 7: 6]) == 6)
+}
+
+@Test func snapshotKeepsTerminalShellsUnderTheirApp() {
+    // Every own process whose real parent is foreign-owned (e.g. root `login`)
+    // must be re-parented to an own ancestor when one exists.
+    let records = ProcessScanner.snapshot(includeInterpreterArguments: false)
+    let logins = records.filter { $0.path == "/usr/bin/login" }
+    #expect(logins.isEmpty, "root-owned login must not be listed")
+    #expect(records.contains { $0.pid == getpid() })
+}

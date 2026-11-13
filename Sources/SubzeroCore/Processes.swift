@@ -43,6 +43,20 @@ public enum ProcessTree {
         public let depth: Int
     }
 
+    /// Parent of `pid` skipping processes outside `kept` (e.g. root-owned `login`
+    /// between iTermServer and the shell). Returns the direct parent when no kept
+    /// ancestor is found before launchd, so the record still looks like a root.
+    public static func nearestAncestor(of pid: Int32, in kept: Set<Int32>, parentOf: [Int32: Int32]) -> Int32 {
+        guard let direct = parentOf[pid] else { return 0 }
+        var current = direct
+        var steps = 0
+        while current > 1, !kept.contains(current), let next = parentOf[current], next != current, steps < 64 {
+            current = next
+            steps += 1
+        }
+        return kept.contains(current) ? current : direct
+    }
+
     /// Depth-first order, parents before children, siblings by pid.
     /// Records whose parent is not in the set are roots.
     public static func flatten(_ records: [ProcessRecord]) -> [Node] {
@@ -163,8 +177,12 @@ public enum ProcessMatcher {
 
 public enum ProcessScanner {
     /// All processes owned by `uid` (default: the current user).
+    ///
+    /// Processes of other users are left out, but the tree goes through them: a
+    /// shell started via root-owned `/usr/bin/login` (iTerm, Terminal) gets the
+    /// nearest own ancestor as its parent, so it stays under the terminal app.
     public static func snapshot(uid: uid_t = getuid(), includeInterpreterArguments: Bool) -> [ProcessRecord] {
-        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: uid)]
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size = 0
         guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return [] }
 
@@ -174,12 +192,22 @@ public enum ProcessScanner {
         guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0 else { return [] }
         let count = min(buffer.count, size / stride)
 
-        var records: [ProcessRecord] = []
-        records.reserveCapacity(count)
+        var parentOf: [Int32: Int32] = [:]
+        parentOf.reserveCapacity(count)
+        var owned: [Int] = []
         for i in 0..<count {
+            let kp = buffer[i]
+            parentOf[kp.kp_proc.p_pid] = kp.kp_eproc.e_ppid
+            if kp.kp_eproc.e_ucred.cr_uid == uid { owned.append(i) }
+        }
+        let ownedPIDs = Set(owned.map { buffer[$0].kp_proc.p_pid })
+
+        var records: [ProcessRecord] = []
+        records.reserveCapacity(owned.count)
+        for i in owned {
             var kp = buffer[i]
             let pid = kp.kp_proc.p_pid
-            let ppid = kp.kp_eproc.e_ppid
+            let ppid = ProcessTree.nearestAncestor(of: pid, in: ownedPIDs, parentOf: parentOf)
             let name = withUnsafeBytes(of: &kp.kp_proc.p_comm) { raw in
                 String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
             }

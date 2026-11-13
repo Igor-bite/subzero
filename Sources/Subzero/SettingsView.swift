@@ -106,14 +106,22 @@ struct AppsTab: View {
                 if !manualOnly.isEmpty {
                     Section {
                         ForEach(manualOnly) { app in
-                            HStack(spacing: 10) {
-                                AppIcon(kind: app.kind)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(app.name)
-                                    AppStateBadge(app: app)
+                            let processes = AppProcesses(app: app, engine: engine)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 10) {
+                                    AppIcon(kind: app.kind)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(app.name)
+                                            processes.toggle
+                                        }
+                                        AppStateBadge(app: app)
+                                    }
+                                    Spacer()
+                                    AppControls(app: app, engine: engine)
                                 }
-                                Spacer()
-                                AppControls(app: app, engine: engine)
+                                processes.list
+                                    .padding(.leading, 34)   // under the name: icon + spacing
                             }
                         }
                     } header: {
@@ -192,32 +200,79 @@ private struct RuleRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: $rule.enabled)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .tint(.green)
-                .help(rule.enabled ? "Защищается" : "Защита выключена")
-            AppIcon(kind: rule.kind)
-                .saturation(rule.enabled ? 1 : 0)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(rule.name)
+        let processes = AppProcesses(app: app, engine: engine)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Toggle("", isOn: $rule.enabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .tint(.green)
+                    .help(rule.enabled ? "Защищается" : "Защита выключена")
+                AppIcon(kind: rule.kind)
+                    .saturation(rule.enabled ? 1 : 0)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(rule.name)
+                        processes.toggle
+                    }
+                    if let app {
+                        AppStateBadge(app: app)
+                    } else {
+                        Text(AppCatalog.subtitle(for: rule)).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                Spacer()
                 if let app {
-                    AppStateBadge(app: app)
-                } else {
-                    Text(AppCatalog.subtitle(for: rule)).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
+                    AppControls(app: app, engine: engine)
+                }
+                IconButton(symbol: "trash", color: .secondary, help: "Убрать из защиты", action: onDelete)
+            }
+            .opacity(rule.enabled ? 1 : 0.65)
+            .help(AppCatalog.subtitle(for: rule))
+            processes.list
+                .padding(.leading, 76)   // under the name: switch + icon
+        }
+    }
+}
+
+/// Process count toggle and the expandable process tree of one app (shared expand state with the menu).
+@MainActor
+private struct AppProcesses {
+    let app: ControlledApp?
+    let engine: GuardEngine
+
+    private var processes: [ProcessRecord] {
+        guard let app, app.state != .notRunning else { return [] }
+        return engine.appProcesses[app.id] ?? []
+    }
+
+    private var expanded: Bool {
+        guard let app else { return false }
+        return !processes.isEmpty && engine.expandedApps.contains(app.id)
+    }
+
+    @ViewBuilder var toggle: some View {
+        if let app, !processes.isEmpty {
+            let expanded = expanded
+            ProcessToggle(processes: processes, expanded: expanded) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    if expanded {
+                        engine.expandedApps.remove(app.id)
+                    } else {
+                        engine.expandedApps.insert(app.id)
+                    }
                 }
             }
-            Spacer()
-            if let app {
-                AppControls(app: app, engine: engine)
-            }
-            IconButton(symbol: "trash", color: .secondary, help: "Убрать из защиты", action: onDelete)
         }
-        .opacity(rule.enabled ? 1 : 0.65)
-        .help(AppCatalog.subtitle(for: rule))
+    }
+
+    @ViewBuilder var list: some View {
+        if expanded {
+            ProcessList(processes: processes)
+                .transition(.opacity)
+        }
     }
 }
 
@@ -288,8 +343,8 @@ struct AllowTab: View {
     var body: some View {
         Form {
             Section {
-                if engine.config.allowedCountries.isEmpty {
-                    Label("Ни одной страны — любой IP считается чужим.", systemImage: "exclamationmark.triangle.fill")
+                if engine.config.allowedCountries.isEmpty && engine.config.allowedNetworks.isEmpty {
+                    Label("Ни одной страны и ни одного IP — любой адрес считается чужим.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
                 ForEach(engine.config.allowedCountries, id: \.self) { code in

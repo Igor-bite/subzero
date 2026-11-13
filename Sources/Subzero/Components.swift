@@ -314,3 +314,92 @@ extension CountryInfo {
         "\(flag(code)) \(name(code))"
     }
 }
+
+// MARK: - Process tree
+
+/// "14 процессов ›": count of caught processes, expands the list.
+struct ProcessToggle: View {
+    let processes: [ProcessRecord]
+    let expanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        let stopped = processes.filter(\.isStopped).count
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(verbatim: "\(processes.count) \(Self.noun(processes.count))")
+                if stopped > 0 && stopped < processes.count {
+                    Text(verbatim: "· \(stopped)")
+                    Image(systemName: "snowflake").foregroundStyle(Palette.frozen)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(expanded ? "Скрыть процессы" : "Показать процессы программы и её потомков")
+    }
+
+    static func noun(_ n: Int) -> String {
+        let mod100 = n % 100, mod10 = n % 10
+        if (11...14).contains(mod100) { return "процессов" }
+        switch mod10 {
+        case 1: return "процесс"
+        case 2...4: return "процесса"
+        default: return "процессов"
+        }
+    }
+}
+
+/// Process tree of one app: name, pid, real kernel state (stopped or running).
+struct ProcessList: View {
+    let processes: [ProcessRecord]
+    private static let rowHeight: CGFloat = 17
+    private static let visibleRows = 8
+
+    var body: some View {
+        let nodes = ProcessTree.flatten(processes)
+        let list = VStack(alignment: .leading, spacing: 0) {
+            ForEach(nodes, id: \.record.pid) { node in
+                row(node)
+            }
+        }
+        Group {
+            if nodes.count > Self.visibleRows {
+                ScrollView { list }
+                    .frame(height: (CGFloat(Self.visibleRows) + 0.5) * Self.rowHeight)
+            } else {
+                list
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(Chamfer(cut: 4).fill(Arcade.night.opacity(0.45)))
+    }
+
+    private func row(_ node: ProcessTree.Node) -> some View {
+        let record = node.record
+        return HStack(spacing: 5) {
+            Image(systemName: record.isStopped ? "snowflake" : "circle.fill")
+                .font(.system(size: record.isStopped ? 9 : 5, weight: .bold))
+                .foregroundStyle(record.isStopped ? Palette.frozen : Palette.running)
+                .frame(width: 10)
+            Text(record.displayName)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            Text(verbatim: String(record.pid))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, CGFloat(min(node.depth, 4)) * 10)
+        .frame(height: Self.rowHeight)
+        .help(record.path ?? record.name)
+    }
+}
