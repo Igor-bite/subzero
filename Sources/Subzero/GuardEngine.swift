@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import FreezerCore
+import SubzeroCore
 import Observation
 
 /// A row in the "programs" list: a protected rule or an app frozen by hand.
@@ -21,6 +21,15 @@ struct ControlledApp: Identifiable, Equatable {
     let isManuallyFrozen: Bool
     /// Protected, but the user let it run during the current block.
     let isOverridden: Bool
+}
+
+/// A hit in the arena: the golem threw an ice ball at apps (freeze) or shattered them (kill).
+struct ArenaHit: Equatable {
+    let id = UUID()
+    let names: [String]
+    let kinds: [AppRuleKind]
+    let at: Date
+    let shatter: Bool
 }
 
 /// An app the user froze by hand. Persisted, so it stays frozen across restarts.
@@ -68,6 +77,8 @@ final class GuardEngine {
     private(set) var overrides: Set<UUID> = []
     private(set) var appStates: [UUID: ControlledApp.State] = [:]
     private(set) var lastError: String?
+    /// Last freeze/kill, drives the ice ball animation in the menu.
+    private(set) var lastHit: ArenaHit?
     /// Updated every tick so countdowns refresh.
     private(set) var now = Date()
 
@@ -97,7 +108,6 @@ final class GuardEngine {
         self.store = store
         self.defaults = defaults
         self.config = store.load()
-        // Manual freezes from older bundle ids arrive via DefaultsMigration (AppDelegate.init).
         if let data = defaults?.data(forKey: Self.manualKey), let saved = try? JSONDecoder().decode([ManualFreeze].self, from: data) {
             manualFreezes = saved
         }
@@ -169,10 +179,22 @@ final class GuardEngine {
         config.apps.filter { frozenRuleIDs.contains($0.id) }.map(\.name)
     }
 
-    /// DNS leak shown as a warning (only when the DNS check is in "warn" mode).
+    /// DNS leak with the action the settings assign to it (default or per-country rule).
+    var dnsFinding: DNSFinding? {
+        guard let snapshot else { return nil }
+        return SubzeroCore.dnsFinding(in: snapshot, rules: config.allowRules, settings: config.policySettings)
+    }
+
+    /// DNS leak shown as a warning only (apps keep running).
     var dnsWarning: DNSLeak? {
-        guard config.dnsCheck == .warn, let snapshot else { return nil }
-        return dnsLeak(in: snapshot, rules: config.allowRules)
+        guard let finding = dnsFinding, finding.action == .warn else { return nil }
+        return finding.leak
+    }
+
+    /// The current block is a DNS leak whose rule says "kill right away".
+    var killsImmediately: Bool {
+        guard case .blocked(.dnsLeak) = phase else { return false }
+        return dnsFinding?.action == .kill
     }
 
     var controlledApps: [ControlledApp] {
@@ -249,6 +271,7 @@ final class GuardEngine {
             saveManualFreezes()
         }
         reconcile(force: true)
+        lastHit = ArenaHit(names: [name], kinds: [kind], at: Date(), shatter: false)
     }
 
     func freeze(_ app: ControlledApp) {
@@ -274,6 +297,7 @@ final class GuardEngine {
         ProcessSignaler.send(SIGKILL, to: victims.keys)
         frozenPIDs.subtract(victims.keys)
         reconcile(force: true)
+        lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), shatter: true)
     }
 
     // MARK: Check loop
@@ -296,7 +320,7 @@ final class GuardEngine {
             isChecking = activeChecks > 0
         }
 
-        let snap = await probe.snapshot(includeIPv6: config.checkIPv6, includeDNS: config.dnsCheck != .off)
+        let snap = await probe.snapshot(includeIPv6: config.checkIPv6, includeDNS: config.policySettings.needsDNS)
         guard !Task.isCancelled else { return }
 
         snapshot = snap
@@ -355,7 +379,7 @@ final class GuardEngine {
         let enabledIDs = Set(enabledRules.map(\.id))
         overrides.formIntersection(enabledIDs)
         if old.checkIPv6 != config.checkIPv6 || old.checkInterval != config.checkInterval
-            || old.minAgree != config.minAgree || old.dnsCheck != config.dnsCheck {
+            || old.minAgree != config.minAgree || old.policySettings.needsDNS != config.policySettings.needsDNS {
             requestCheck()
         }
         if started {
@@ -413,7 +437,7 @@ final class GuardEngine {
             requestCheck()
         }
 
-        let grace: TimeInterval? = config.killAfterGrace ? config.grace : nil
+        let grace: TimeInterval? = killsImmediately ? 0 : (config.killAfterGrace ? config.grace : nil)
         let blocked = shouldBlock
         let action = enforcer.step(blocked: blocked, now: now, grace: grace)
         let deadline = blocked ? enforcer.deadline(grace: grace) : nil
@@ -450,7 +474,10 @@ final class GuardEngine {
                 targets = targets.filter { victims[$0.key] == nil }
                 let ids = Set(victims.values)
                 let names = config.apps.filter { ids.contains($0.id) }.map(\.name)
-                notifier.post(title: "Закрыл программы", body: "Разрешённый IP не вернулся: \(names.joined(separator: ", "))")
+                let killed = config.apps.filter { ids.contains($0.id) }
+                lastHit = ArenaHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), shatter: true)
+                let why = killsImmediately ? "Утечка DNS" : "Разрешённый IP не вернулся"
+                notifier.post(title: "K.O. — программы закрыты", body: "\(why): \(names.joined(separator: ", "))")
             }
         }
 
@@ -467,7 +494,7 @@ final class GuardEngine {
         var toContinue = frozenPIDs.subtracting(desired)
         if action == .resume {
             // Also release matches we did not track: recovers apps left
-            // stopped by a previous crash of Freezer.
+            // stopped by a previous crash of Subzero.
             let autoPIDs = targets.filter { autoIDs.contains($0.value) }.keys
             toContinue.formUnion(Set(autoPIDs).subtracting(desired))
         }
@@ -493,6 +520,11 @@ final class GuardEngine {
 
         let autoFrozen = Set(targets.filter { desired.contains($0.key) && autoIDs.contains($0.value) && !manualIDs.contains($0.value) }.values)
         let newFrozenRules = blocked ? autoFrozen : []
+        let justFrozen = newFrozenRules.subtracting(frozenRuleIDs)
+        if !justFrozen.isEmpty {
+            let hit = config.apps.filter { justFrozen.contains($0.id) }
+            lastHit = ArenaHit(names: hit.map(\.name), kinds: hit.map(\.kind), at: Date(), shatter: false)
+        }
         if frozenRuleIDs != newFrozenRules { frozenRuleIDs = newFrozenRules }
     }
 
@@ -520,8 +552,10 @@ final class GuardEngine {
         manualFreezes: [ManualFreeze] = [],
         overrides: Set<UUID> = [],
         pausedUntil: Date? = nil,
-        killDeadline: Date? = nil
+        killDeadline: Date? = nil,
+        lastHit: ArenaHit? = nil
     ) {
+        self.lastHit = lastHit
         self.snapshot = snapshot
         self.verdict = verdict
         self.lastCheck = Date()

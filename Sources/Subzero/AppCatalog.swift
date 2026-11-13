@@ -1,5 +1,5 @@
 import AppKit
-import FreezerCore
+import SubzeroCore
 
 enum AppCatalog {
     /// Apps commonly worth protecting; shown when installed.
@@ -19,7 +19,7 @@ enum AppCatalog {
     /// Names that must never be frozen: the desktop itself would hang.
     static let forbiddenNames: Set<String> = [
         "launchd", "WindowServer", "loginwindow", "Finder", "Dock", "SystemUIServer",
-        "ControlCenter", "kernel_task", "Freezer",
+        "ControlCenter", "kernel_task", "Subzero",
     ]
 
     static var searchDirectories: [URL] {
@@ -51,7 +51,7 @@ enum AppCatalog {
         case .bundle(let path):
             if path.hasPrefix("/System/") { return "Системные программы защищать нельзя." }
             if path.hasSuffix("/Safari.app") { return "Safari защитить нельзя: его вкладки живут в общих системных процессах." }
-            if path == Bundle.main.bundlePath { return "Freezer не может замораживать сам себя." }
+            if path == Bundle.main.bundlePath { return "Subzero не может замораживать сам себя." }
         case .patterns(let patterns):
             let cleaned = patterns.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             if cleaned.isEmpty { return "Укажите хотя бы одно имя или часть пути." }

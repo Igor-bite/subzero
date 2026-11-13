@@ -1,5 +1,5 @@
 import AppKit
-import FreezerCore
+import SubzeroCore
 import SwiftUI
 
 // MARK: - Status palette
@@ -7,10 +7,10 @@ import SwiftUI
 extension GuardEngine.Phase {
     var colors: [Color] {
         switch self {
-        case .checking: [Color(red: 0.30, green: 0.47, blue: 0.95), Color(red: 0.42, green: 0.36, blue: 0.90)]
-        case .protected: [Color(red: 0.16, green: 0.72, blue: 0.45), Color(red: 0.10, green: 0.62, blue: 0.62)]
-        case .blocked: [Color(red: 0.93, green: 0.27, blue: 0.30), Color(red: 0.86, green: 0.22, blue: 0.52)]
-        case .paused: [Color(red: 0.98, green: 0.62, blue: 0.18), Color(red: 0.95, green: 0.45, blue: 0.20)]
+        case .checking: [Arcade.ice, Arcade.iceDeep]
+        case .protected: [Arcade.life, Color(red: 0.12, green: 0.55, blue: 0.40)]
+        case .blocked: [Arcade.blood, Color(red: 0.55, green: 0.08, blue: 0.20)]
+        case .paused: [Arcade.caution, Arcade.ember]
         }
     }
 
@@ -28,7 +28,7 @@ extension GuardEngine.Phase {
     var nsColor: NSColor? {
         switch self {
         case .checking: nil
-        case .protected: .systemGreen
+        case .protected: nil
         case .blocked: .systemRed
         case .paused: .systemOrange
         }
@@ -36,32 +36,34 @@ extension GuardEngine.Phase {
 }
 
 enum Palette {
-    static let frozen = Color(red: 0.20, green: 0.62, blue: 0.95)
-    static let running = Color(red: 0.16, green: 0.72, blue: 0.45)
-    static let warning = Color.orange
-    static let danger = Color(red: 0.93, green: 0.27, blue: 0.30)
-    static let manual = Color.purple
+    static let frozen = Arcade.ice
+    static let running = Arcade.life
+    static let warning = Arcade.caution
+    static let danger = Arcade.blood
+    static let manual = Color(red: 0.72, green: 0.52, blue: 1.0)
 }
 
 // MARK: - Building blocks
 
-/// Rounded, softly filled container.
+/// HUD panel: dark steel plate with cut corners and a bevelled frame.
 struct Card<Content: View>: View {
     var tint: Color?
     @ViewBuilder var content: Content
 
     var body: some View {
+        let frame = tint ?? Arcade.steel
         VStack(alignment: .leading, spacing: 8) { content }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(tint.map { AnyShapeStyle($0.opacity(0.12)) } ?? AnyShapeStyle(.quaternary.opacity(0.55)))
-            }
-            .overlay {
-                if let tint {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(tint.opacity(0.35), lineWidth: 1)
+                ZStack {
+                    Chamfer(cut: 7).fill(LinearGradient(colors: [Arcade.panelHigh, Arcade.panel], startPoint: .top, endPoint: .bottom))
+                    if let tint {
+                        Chamfer(cut: 7).fill(tint.opacity(0.12))
+                    }
+                    Chamfer(cut: 7).strokeBorder(Arcade.night, lineWidth: 3)
+                    Chamfer(cut: 7).inset(by: 1).strokeBorder(frame.opacity(0.9), lineWidth: 1.5)
+                    Chamfer(cut: 6).inset(by: 3).strokeBorder(.white.opacity(0.06), lineWidth: 1)
                 }
             }
     }
@@ -71,25 +73,30 @@ struct SectionTitle: View {
     let text: String
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .tracking(0.6)
+        HStack(spacing: 5) {
+            Rectangle().fill(Arcade.gold).frame(width: 4, height: 4)
+            Text(text.uppercased())
+                .font(Arcade.font(10, weight: .black))
+                .foregroundStyle(Arcade.gold)
+                .tracking(1.2)
+        }
     }
 }
 
+/// Square "LED".
 struct StatusDot: View {
     let color: Color
 
     var body: some View {
-        Circle()
-            .fill(color.gradient)
-            .frame(width: 8, height: 8)
-            .shadow(color: color.opacity(0.5), radius: 2)
+        Rectangle()
+            .fill(color)
+            .frame(width: 7, height: 7)
+            .overlay(Rectangle().strokeBorder(Arcade.night, lineWidth: 1))
+            .shadow(color: color.opacity(0.7), radius: 3)
     }
 }
 
-/// Small colored capsule label.
+/// Small square-cornered tag.
 struct Badge: View {
     let text: String
     let color: Color
@@ -97,17 +104,18 @@ struct Badge: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 8, weight: .bold)) }
-            Text(text).font(.caption2.weight(.semibold))
+            if let symbol { Image(systemName: symbol).font(.system(size: 7, weight: .black)) }
+            Text(text.uppercased()).font(Arcade.font(8.5, weight: .black)).tracking(0.4)
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 5)
         .padding(.vertical, 2)
         .foregroundStyle(color)
-        .background(color.opacity(0.15), in: Capsule())
+        .background(Chamfer(cut: 2.5).fill(color.opacity(0.16)))
+        .overlay(Chamfer(cut: 2.5).strokeBorder(color.opacity(0.55), lineWidth: 1))
     }
 }
 
-/// Round tinted icon button.
+/// Square bevelled icon button.
 struct IconButton: View {
     let symbol: String
     let color: Color
@@ -118,10 +126,10 @@ struct IconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(hovering ? .white : color)
+                .font(.system(size: 10, weight: .black))
+                .foregroundStyle(hovering ? Arcade.night : color)
                 .frame(width: 24, height: 24)
-                .background(Circle().fill(hovering ? AnyShapeStyle(color.gradient) : AnyShapeStyle(color.opacity(0.15))))
+                .background(BevelPlate(color: color, lit: hovering, cut: 4))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -130,34 +138,59 @@ struct IconButton: View {
     }
 }
 
-/// Filled capsule button that keeps its color even when the panel is not key.
+/// Bevelled plate behind buttons: light top edge, dark bottom edge.
+struct BevelPlate: View {
+    let color: Color
+    var lit = false
+    var filled = false
+    var cut: CGFloat = 5
+    var pressed = false
+
+    var body: some View {
+        ZStack {
+            Chamfer(cut: cut).fill(Arcade.night)
+            Chamfer(cut: cut).inset(by: 1)
+                .fill(lit || filled
+                      ? AnyShapeStyle(LinearGradient(colors: [color.mix(with: .white, by: 0.25), color, color.mix(with: .black, by: 0.35)], startPoint: .top, endPoint: .bottom))
+                      : AnyShapeStyle(color.opacity(0.14)))
+            Chamfer(cut: cut).inset(by: 1).strokeBorder(color.opacity(lit || filled ? 0 : 0.6), lineWidth: 1)
+            if lit || filled {
+                Rectangle().fill(.white.opacity(pressed ? 0 : 0.35)).frame(height: 1).padding(.horizontal, cut + 1)
+                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 2)
+            }
+        }
+    }
+}
+
+/// Arcade button: chunky, uppercase, bevelled. Keeps its color when the panel is not key.
 struct PillButtonStyle: ButtonStyle {
     var color: Color
     var filled = true
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.callout.weight(.semibold))
+            .font(Arcade.font(11, weight: .black))
+            .textCase(.uppercase)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .foregroundStyle(filled ? AnyShapeStyle(.white) : AnyShapeStyle(color))
-            .background(Capsule().fill(filled ? AnyShapeStyle(color.gradient) : AnyShapeStyle(color.opacity(0.15))))
-            .opacity(configuration.isPressed ? 0.75 : 1)
-            .contentShape(Capsule())
+            .padding(.vertical, 6)
+            .foregroundStyle(filled ? Arcade.night : color)
+            .background(BevelPlate(color: color, filled: filled, pressed: configuration.isPressed))
+            .offset(y: configuration.isPressed ? 1 : 0)
+            .contentShape(Chamfer(cut: 5))
     }
 }
 
-/// System Settings style colored square with a white symbol.
+/// Square tile with a white symbol, pixel-panel style.
 struct IconTile: View {
     let symbol: String
     let color: Color
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 11, weight: .bold))
             .foregroundStyle(.white)
             .frame(width: 22, height: 22)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(color.gradient))
+            .background(BevelPlate(color: color, filled: true, cut: 4))
     }
 }
 

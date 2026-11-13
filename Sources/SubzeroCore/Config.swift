@@ -39,7 +39,10 @@ public struct GuardConfig: Codable, Equatable, Sendable {
     public var checkIPv6: Bool = true
     public var freezeOnNetworkChange: Bool = true
     public var blockWhenOffline: Bool = true
+    /// DNS leak behavior for countries without an explicit rule.
     public var dnsCheck: DNSCheckMode = .warn
+    /// Explicit DNS leak behavior by resolver country.
+    public var dnsCountryRules: [DNSCountryRule] = []
     public var notifications: Bool = true
     public var menuBarText: MenuBarText = .country
 
@@ -50,7 +53,11 @@ public struct GuardConfig: Codable, Equatable, Sendable {
     }
 
     public var policySettings: PolicySettings {
-        PolicySettings(minAgree: minAgree, checkIPv6: checkIPv6, blockWhenOffline: blockWhenOffline, dnsCheck: dnsCheck)
+        PolicySettings(
+            minAgree: minAgree, checkIPv6: checkIPv6, blockWhenOffline: blockWhenOffline,
+            dnsCheck: dnsCheck,
+            dnsCountries: Dictionary(dnsCountryRules.map { ($0.country.uppercased(), $0.action) }, uniquingKeysWith: { first, _ in first })
+        )
     }
 }
 
@@ -70,6 +77,7 @@ extension GuardConfig {
         freezeOnNetworkChange = try c.decodeIfPresent(Bool.self, forKey: .freezeOnNetworkChange) ?? d.freezeOnNetworkChange
         blockWhenOffline = try c.decodeIfPresent(Bool.self, forKey: .blockWhenOffline) ?? d.blockWhenOffline
         dnsCheck = (try? c.decodeIfPresent(DNSCheckMode.self, forKey: .dnsCheck)) ?? d.dnsCheck
+        dnsCountryRules = (try? c.decodeIfPresent([DNSCountryRule].self, forKey: .dnsCountryRules)) ?? d.dnsCountryRules
         notifications = try c.decodeIfPresent(Bool.self, forKey: .notifications) ?? d.notifications
         menuBarText = (try? c.decodeIfPresent(MenuBarText.self, forKey: .menuBarText)) ?? d.menuBarText
     }
@@ -77,43 +85,22 @@ extension GuardConfig {
 
 public struct ConfigStore: Sendable {
     public let url: URL
-    /// Where an older build kept its config; copied over once if `url` does not exist yet.
-    public let legacyURL: URL?
 
-    public init(url: URL = ConfigStore.defaultURL, legacyURL: URL? = nil) {
+    public init(url: URL = ConfigStore.defaultURL) {
         self.url = url
-        self.legacyURL = legacyURL
     }
 
-    /// The app's real store, migrating from the old "Karing" location.
-    public static var standard: ConfigStore {
-        ConfigStore(url: defaultURL, legacyURL: legacyDefaultURL)
-    }
-
-    private static var supportDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    }
+    public static var standard: ConfigStore { ConfigStore() }
 
     public static var defaultURL: URL {
-        supportDirectory.appendingPathComponent("Freezer", isDirectory: true).appendingPathComponent("config.json")
-    }
-
-    /// The app used to be called Karing.
-    public static var legacyDefaultURL: URL {
-        supportDirectory.appendingPathComponent("Karing", isDirectory: true).appendingPathComponent("config.json")
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Subzero", isDirectory: true)
+            .appendingPathComponent("config.json")
     }
 
     public func load() -> GuardConfig {
-        migrateIfNeeded()
         guard let data = try? Data(contentsOf: url) else { return GuardConfig() }
         return (try? JSONDecoder().decode(GuardConfig.self, from: data)) ?? GuardConfig()
-    }
-
-    private func migrateIfNeeded() {
-        let fm = FileManager.default
-        guard let legacyURL, !fm.fileExists(atPath: url.path), fm.fileExists(atPath: legacyURL.path) else { return }
-        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? fm.copyItem(at: legacyURL, to: url)
     }
 
     public func save(_ config: GuardConfig) throws {

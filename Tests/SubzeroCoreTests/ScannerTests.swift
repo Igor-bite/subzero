@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 import Testing
-@testable import FreezerCore
+@testable import SubzeroCore
 
 @Test func scannerSeesCurrentProcessQuickly() {
     let clock = ContinuousClock()

@@ -1,5 +1,5 @@
 import AppKit
-import FreezerCore
+import SubzeroCore
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
@@ -9,6 +9,17 @@ struct SettingsView: View {
     @Bindable var engine: GuardEngine
 
     var body: some View {
+        VStack(spacing: 0) {
+            SettingsBanner(engine: engine)
+            tabs
+        }
+        .frame(width: 600, height: 620)
+        .background(Arcade.night)
+        .environment(\.colorScheme, .dark)
+        .tint(Arcade.ice)
+    }
+
+    private var tabs: some View {
         TabView {
             AppsTab(engine: engine)
                 .tabItem { Label("Программы", systemImage: "square.stack.3d.up.fill") }
@@ -17,7 +28,41 @@ struct SettingsView: View {
             BehaviorTab(engine: engine)
                 .tabItem { Label("Поведение", systemImage: "slider.horizontal.3") }
         }
-        .frame(width: 600, height: 540)
+        .scrollContentBackground(.hidden)
+        .background(Color(red: 0.06, green: 0.08, blue: 0.15))
+    }
+}
+
+/// Title strip: the fighter, the game name and the current state.
+private struct SettingsBanner: View {
+    let engine: GuardEngine
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            SpriteView(sprite: Frost.sprite(.stance), scale: 2, bob: true)
+                .padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: 4) {
+                PixelText(text: "SUBZERO", scale: 5, colors: [Arcade.frost, Arcade.ice, Arcade.iceDeep])
+                Text("Заморозка программ при чужом IP или утечке DNS")
+                    .font(Arcade.font(11, weight: .bold))
+                    .foregroundStyle(Arcade.frost.opacity(0.85))
+                    .padding(.leading, 5)
+            }
+            .padding(.bottom, 26)
+            Spacer()
+            Text(engine.statusSummary.uppercased())
+                .font(Arcade.font(10, weight: .black))
+                .foregroundStyle(engine.phase.tint)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Chamfer(cut: 3).fill(Arcade.night.opacity(0.8)))
+                .overlay(Chamfer(cut: 3).strokeBorder(engine.phase.tint.opacity(0.7), lineWidth: 1))
+                .padding(.bottom, 30)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ArenaBackdrop(tint: engine.phase.tint))
+        .overlay(alignment: .bottom) { Rectangle().fill(Arcade.gold.opacity(0.8)).frame(height: 1) }
     }
 }
 
@@ -368,6 +413,81 @@ struct AllowTab: View {
     }
 }
 
+// MARK: - DNS rules
+
+extension DNSCheckMode {
+    var title: String {
+        switch self {
+        case .off: "Игнорировать"
+        case .warn: "Предупреждать"
+        case .block: "Замораживать"
+        case .kill: "Убивать сразу"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .off: .gray
+        case .warn: Palette.warning
+        case .block: Palette.frozen
+        case .kill: Palette.danger
+        }
+    }
+}
+
+/// Default DNS leak behavior plus explicit rules for chosen resolver countries.
+struct DNSRulesSection: View {
+    @Bindable var engine: GuardEngine
+    @State private var countryToAdd = ""
+
+    var body: some View {
+        Section {
+            Picker(selection: $engine.config.dnsCheck) {
+                ForEach(DNSCheckMode.allCases, id: \.self) { Text($0.title).tag($0) }
+            } label: {
+                Label { Text("Остальные страны") } icon: { IconTile(symbol: "globe", color: .cyan) }
+            }
+            ForEach($engine.config.dnsCountryRules, id: \.country) { $rule in
+                HStack(spacing: 10) {
+                    Text(CountryInfo.flag(rule.country)).font(.title2)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(CountryInfo.name(rule.country))
+                        Text(rule.country).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                    if engine.dnsFinding?.leak.country == rule.country {
+                        Badge(text: "сейчас", color: rule.action.color, symbol: "drop.fill")
+                    }
+                    Spacer()
+                    Picker("", selection: $rule.action) {
+                        ForEach(DNSCheckMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    IconButton(symbol: "minus", color: Palette.danger, help: "Убрать правило") {
+                        engine.config.dnsCountryRules.removeAll { $0.country == rule.country }
+                    }
+                }
+            }
+            Picker("Правило для страны", selection: $countryToAdd) {
+                Text("Выберите…").tag("")
+                ForEach(CountryInfo.allCodes().filter { code in !engine.config.dnsCountryRules.contains { $0.country == code } }, id: \.self) { code in
+                    Text(CountryInfo.label(code)).tag(code)
+                }
+            }
+            .onChange(of: countryToAdd) { _, code in
+                guard !code.isEmpty else { return }
+                engine.config.dnsCountryRules.append(DNSCountryRule(country: code, action: .kill))
+                countryToAdd = ""
+            }
+        } header: {
+            Label { Text("Утечка DNS") } icon: { IconTile(symbol: "drop.fill", color: .cyan) }
+        } footer: {
+            Text("Утечка DNS — трафик идёт через VPN, а DNS-запросы через резолвер в другой стране (обычно провайдера). Правило для страны срабатывает, когда резолвер в ней, даже если страна разрешена; резолвер в стране VPN утечкой не считается. «Убивать сразу» закрывает защищаемые программы без ожидания. Резолвер определяется через whoami.akamai.net.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Behavior
 
 struct BehaviorTab: View {
@@ -398,19 +518,11 @@ struct BehaviorTab: View {
                 Toggle(isOn: $engine.config.checkIPv6) {
                     row("Проверять утечку IPv6", "6.circle.fill", .purple)
                 }
-                Picker(selection: $engine.config.dnsCheck) {
-                    Text("Выключена").tag(DNSCheckMode.off)
-                    Text("Предупреждать").tag(DNSCheckMode.warn)
-                    Text("Замораживать").tag(DNSCheckMode.block)
-                } label: {
-                    row("Утечка DNS", "drop.fill", .cyan)
-                }
             } header: {
                 Text("Проверка")
-            } footer: {
-                Text("Утечка DNS — когда трафик идёт через VPN, а DNS-запросы через резолвер в другой стране (обычно провайдера). Резолвер определяется через whoami.akamai.net.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+
+            DNSRulesSection(engine: engine)
 
             Section {
                 Toggle(isOn: $engine.config.freezeOnNetworkChange) {

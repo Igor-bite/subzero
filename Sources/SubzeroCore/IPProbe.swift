@@ -98,7 +98,7 @@ public actor IPProbe {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.waitsForConnectivity = false
-        config.httpAdditionalHeaders = ["User-Agent": "Freezer/1.0", "Accept": "text/plain, application/json"]
+        config.httpAdditionalHeaders = ["User-Agent": "Subzero/1.0", "Accept": "text/plain, application/json"]
         return URLSession(configuration: config)
     }
 

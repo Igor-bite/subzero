@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import FreezerCore
+@testable import SubzeroCore
 
 // MARK: - IP parsing and networks
 
@@ -170,6 +170,75 @@ private let resolverNL = IPAddress("185.10.10.53")!
     #expect(evaluate(snap, rules: rulesNL, settings: block) == .blocked(.notAllowed(ru, country: "RU")))
 }
 
+// MARK: - DNS rules by country
+
+private let resolverDE = IPAddress("9.9.9.9")!
+private let resolverUS = IPAddress("8.8.8.8")!
+
+private func snapNL(resolver: IPAddress, country: String) -> NetworkSnapshot {
+    NetworkSnapshot(ipv4: .agreed(nl, votes: 3), ipv6: .none, countries: [nl: "NL", resolver: country], dnsResolver: resolver)
+}
+
+@Test func countryRuleOverridesDefault() {
+    var s = settings
+    s.dnsCheck = .warn
+    s.dnsCountries = ["RU": .kill]
+    let ruLeak = snapNL(resolver: resolverRU, country: "RU")
+    #expect(dnsFinding(in: ruLeak, rules: rulesNL, settings: s)?.action == .kill)
+    #expect(evaluate(ruLeak, rules: rulesNL, settings: s) == .blocked(.dnsLeak(resolverRU, country: "RU")))
+
+    // Other countries keep the default.
+    let usLeak = snapNL(resolver: resolverUS, country: "US")
+    #expect(dnsFinding(in: usLeak, rules: rulesNL, settings: s)?.action == .warn)
+    #expect(evaluate(usLeak, rules: rulesNL, settings: s) == .allowed(nl))
+}
+
+@Test func countryRuleCanIgnoreACountry() {
+    var s = settings
+    s.dnsCheck = .block
+    s.dnsCountries = ["US": .off]
+    let usLeak = snapNL(resolver: resolverUS, country: "US")
+    #expect(dnsFinding(in: usLeak, rules: rulesNL, settings: s) == nil)
+    #expect(evaluate(usLeak, rules: rulesNL, settings: s) == .allowed(nl))
+    #expect(dnsFinding(in: snapNL(resolver: resolverRU, country: "RU"), rules: rulesNL, settings: s)?.action == .block)
+}
+
+@Test func countryRuleAppliesEvenToAllowedCountry() {
+    let rules = AllowRules(countries: ["NL", "DE"], networks: [])
+    var s = settings
+    let deResolver = snapNL(resolver: resolverDE, country: "DE")
+    s.dnsCheck = .block
+    #expect(dnsFinding(in: deResolver, rules: rules, settings: s) == nil)   // allowed: no default leak
+    s.dnsCountries = ["DE": .warn]
+    #expect(dnsFinding(in: deResolver, rules: rules, settings: s)?.action == .warn)
+}
+
+@Test func resolverInExitCountryNeverTriggersCountryRule() {
+    var s = settings
+    s.dnsCountries = ["NL": .kill]
+    #expect(dnsFinding(in: snapNL(resolver: resolverNL, country: "NL"), rules: rulesNL, settings: s) == nil)
+}
+
+@Test func dnsLookupNeededOnlyWhenSomethingChecks() {
+    var s = settings
+    #expect(!s.needsDNS)
+    s.dnsCountries = ["RU": .off]
+    #expect(!s.needsDNS)
+    s.dnsCountries = ["RU": .warn]
+    #expect(s.needsDNS)
+}
+
+@Test func configCarriesCountryRulesIntoPolicy() throws {
+    var cfg = GuardConfig()
+    cfg.dnsCountryRules = [DNSCountryRule(country: "ru", action: .kill)]
+    #expect(cfg.policySettings.dnsCountries == ["RU": .kill])
+    let back = try JSONDecoder().decode(GuardConfig.self, from: JSONEncoder().encode(cfg))
+    #expect(back.dnsCountryRules == cfg.dnsCountryRules)
+    // Old files without the key still load.
+    let old = try JSONDecoder().decode(GuardConfig.self, from: Data(#"{"dnsCheck":"block"}"#.utf8))
+    #expect(old.dnsCheck == .block && old.dnsCountryRules.isEmpty)
+}
+
 @Test func ipFromBytes() {
     #expect(IPAddress(bytes: [8, 8, 4, 4])?.description == "8.8.4.4")
     #expect(IPAddress(bytes: [1, 2, 3]) == nil)
@@ -249,7 +318,7 @@ private func proc(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String? = 
     let processes = [
         proc(1, 0, "/Applications/X.app/Contents/MacOS/X"),
         proc(50, 1, "/Applications/X.app/Contents/MacOS/X"),
-        proc(51, 50, "/Applications/Freezer.app/Contents/MacOS/Freezer"),
+        proc(51, 50, "/Applications/Subzero.app/Contents/MacOS/Subzero"),
     ]
     let targets = ProcessMatcher.targets(
         processes: processes,
@@ -293,53 +362,4 @@ private func proc(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String? = 
     let data = try JSONEncoder().encode(cfg)
     let back = try JSONDecoder().decode(GuardConfig.self, from: data)
     #expect(back == cfg)
-}
-
-@Test func configMigratesFromLegacyLocationOnce() throws {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("freezer-migrate-\(UUID())")
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let legacy = dir.appendingPathComponent("Karing/config.json")
-    let current = dir.appendingPathComponent("Freezer/config.json")
-
-    var old = GuardConfig()
-    old.allowedCountries = ["NL"]
-    try ConfigStore(url: legacy).save(old)
-
-    let store = ConfigStore(url: current, legacyURL: legacy)
-    #expect(store.load().allowedCountries == ["NL"])
-    #expect(FileManager.default.fileExists(atPath: current.path))
-
-    // Once the new file exists, the legacy one is ignored.
-    var changed = old
-    changed.allowedCountries = ["DE"]
-    try store.save(changed)
-    #expect(store.load().allowedCountries == ["DE"])
-}
-
-@Test func flagEmoji() {
-    #expect(CountryInfo.flag("nl") == "🇳🇱")
-    #expect(CountryInfo.flag("X") == "")
-}
-
-// MARK: - Defaults migration
-
-@Test func defaultsMigrationCopiesMissingKeysOnce() throws {
-    let suite = "FreezerTests.migration.\(UUID().uuidString)"
-    let target = try #require(UserDefaults(suiteName: suite))
-    defer { target.removePersistentDomain(forName: suite) }
-    target.set(false, forKey: "showInDock")
-
-    let legacy: [String: [String: Any]] = [
-        "new.id": ["manualFreezes": Data("[1]".utf8), "showInDock": true],
-        "old.id": ["manualFreezes": Data("[2]".utf8), "onlyOld": 7],
-    ]
-    DefaultsMigration.run(into: target, from: ["new.id", "old.id"]) { legacy[$0] }
-
-    #expect(target.data(forKey: "manualFreezes") == Data("[1]".utf8)) // newer domain wins
-    #expect(target.bool(forKey: "showInDock") == false)                // existing value kept
-    #expect(target.integer(forKey: "onlyOld") == 7)
-
-    target.removeObject(forKey: "onlyOld")
-    DefaultsMigration.run(into: target, from: ["new.id", "old.id"]) { legacy[$0] }
-    #expect(target.object(forKey: "onlyOld") == nil)                   // runs once
 }

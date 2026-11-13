@@ -1,5 +1,5 @@
 import AppKit
-import FreezerCore
+import SubzeroCore
 import SwiftUI
 
 struct MenuView: View {
@@ -22,6 +22,9 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 350)
+        .background(LinearGradient(colors: [Arcade.night, Color(red: 0.06, green: 0.08, blue: 0.15)], startPoint: .top, endPoint: .bottom))
+        .environment(\.colorScheme, .dark)
+        .tint(Arcade.ice)
     }
 
     private func openSettings() {
@@ -30,64 +33,173 @@ struct MenuView: View {
     }
 }
 
-// MARK: - Header
+// MARK: - Header: the arena
 
 private struct HeaderCard: View {
     let engine: GuardEngine
 
     var body: some View {
         let phase = engine.phase
-        HStack(spacing: 12) {
-            Image(systemName: phase.symbol)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(.white.opacity(0.22)))
-                .contentTransition(.symbolEffect(.replace))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title(phase))
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text(subtitle(phase))
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(1)
+        VStack(spacing: 4) {
+            HStack(alignment: .bottom, spacing: 8) {
+                HealthBar(label: ipLabel, value: ipHealth(phase), color: phase.tint)
+                RoundTimer(text: timerText(phase), urgent: engine.killDeadline != nil || engine.killsImmediately)
+                HealthBar(label: dnsLabel, value: dnsHealth.value, color: dnsHealth.color, mirrored: true)
             }
-            Spacer(minLength: 0)
-            Button {
-                engine.requestCheck()
-            } label: {
-                Group {
-                    if engine.isChecking {
-                        ProgressView().controlSize(.small).tint(.white)
-                    } else {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .bold))
-                    }
+            HStack(alignment: .bottom, spacing: 6) {
+                TimelineView(.periodic(from: .now, by: 0.1)) { timeline in
+                    let pose = throwing(at: timeline.date) ? .cast : pose(phase)
+                    SpriteView(sprite: Frost.sprite(pose), scale: 3, bob: pose == .stance, dim: isPaused(phase))
                 }
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(.white.opacity(0.2)))
+                VStack(alignment: .leading, spacing: 2) {
+                    PixelText(text: banner(phase), scale: 4, colors: bannerColors(phase))
+                    Text(subtitle(phase))
+                        .font(Arcade.font(10, weight: .bold))
+                        .foregroundStyle(Arcade.frost.opacity(0.9))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .shadow(color: .black, radius: 0, x: 1, y: 1)
+                        .padding(.leading, 4)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 14)
+                Spacer(minLength: 0)
+                refreshButton
+                    .padding(.bottom, 26)
+                    .opacity(hitActive ? 0 : 1)
             }
-            .buttonStyle(.plain)
-            .help("Проверить сейчас")
-            .disabled(engine.isChecking)
         }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(LinearGradient(colors: phase.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                .shadow(color: phase.tint.opacity(0.35), radius: 6, y: 2)
+        .padding(.horizontal, 10)
+        .padding(.top, 9)
+        .overlay {
+            if let hit = engine.lastHit, engine.now.timeIntervalSince(hit.at) < IceBall.total + 1 {
+                // Hand of the cast pose: sprite pixel (22, 16) at scale 3, below the HUD row.
+                ArenaThrow(hit: hit, hand: CGPoint(x: 10 + 22 * 3, y: 9 + 34 + 4 + 18 * 3))
+            }
+        }
+        .background(ArenaBackdrop(tint: phase.tint).clipShape(Chamfer(cut: 9)))
+        .overlay {
+            Chamfer(cut: 9).strokeBorder(Arcade.night, lineWidth: 3)
+            Chamfer(cut: 9).inset(by: 1).strokeBorder(Arcade.gold.opacity(0.85), lineWidth: 1.5)
         }
         .animation(.easeInOut(duration: 0.25), value: phase)
     }
 
-    private func title(_ phase: GuardEngine.Phase) -> String {
-        switch phase {
-        case .checking: "Проверяю IP…"
-        case .protected: engine.enabledRules.isEmpty ? "IP в порядке" : "Защищено"
-        case .blocked: engine.frozenRuleIDs.isEmpty ? "IP не разрешён" : "Заморожено"
-        case .paused: "Пауза"
+    private var refreshButton: some View {
+        Button {
+            engine.requestCheck()
+        } label: {
+            Group {
+                if engine.isChecking {
+                    ProgressView().controlSize(.mini).tint(Arcade.frost)
+                } else {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .black))
+                }
+            }
+            .foregroundStyle(Arcade.frost)
+            .frame(width: 26, height: 26)
+            .background(BevelPlate(color: Arcade.ice, cut: 4))
         }
+        .buttonStyle(.plain)
+        .help("Проверить сейчас")
+        .disabled(engine.isChecking)
+    }
+
+    // MARK: Fighter
+
+    private func pose(_ phase: GuardEngine.Phase) -> Frost.Pose {
+        switch phase {
+        case .blocked: .cast
+        case .paused: .rest
+        case .checking, .protected: .stance
+        }
+    }
+
+    /// An ice ball or its impact is on screen (the target sits where the refresh button is).
+    private var hitActive: Bool {
+        guard let hit = engine.lastHit else { return false }
+        return engine.now.timeIntervalSince(hit.at) < IceBall.total
+    }
+
+    /// The golem holds the throwing pose while the ball is in the air and a moment after.
+    private func throwing(at date: Date) -> Bool {
+        guard let hit = engine.lastHit else { return false }
+        let t = date.timeIntervalSince(hit.at)
+        return t >= -0.05 && t < IceBall.flight + 0.35
+    }
+
+    private func isPaused(_ phase: GuardEngine.Phase) -> Bool {
+        if case .paused = phase { return true }
+        return false
+    }
+
+    private func banner(_ phase: GuardEngine.Phase) -> String {
+        switch phase {
+        case .checking: "SCAN"
+        case .protected: engine.enabledRules.isEmpty ? "READY" : "FIGHT!"
+        case .blocked:
+            engine.killsImmediately ? "K.O." : (engine.frozenRuleIDs.isEmpty ? "BLOCK" : "FROZEN!")
+        case .paused: "PAUSE"
+        }
+    }
+
+    private func bannerColors(_ phase: GuardEngine.Phase) -> [Color] {
+        switch phase {
+        case .checking: [Arcade.frost, Arcade.ice, Arcade.iceDeep]
+        case .protected: [Color(red: 1, green: 0.97, blue: 0.75), Arcade.gold, Arcade.ember]
+        case .blocked:
+            engine.killsImmediately || engine.frozenRuleIDs.isEmpty
+                ? [Color(red: 1, green: 0.85, blue: 0.6), Arcade.ember, Arcade.blood]
+                : [Arcade.frost, Arcade.ice, Arcade.iceDeep]
+        case .paused: [Color(red: 1, green: 0.95, blue: 0.8), Arcade.caution, Arcade.ember]
+        }
+    }
+
+    // MARK: HUD
+
+    private var ipLabel: String {
+        engine.currentCountry.map { "IP \($0)" } ?? "IP"
+    }
+
+    private func ipHealth(_ phase: GuardEngine.Phase) -> Double {
+        switch phase {
+        case .protected: return 1
+        case .checking: return 0.6
+        case .paused: return 0.5
+        case .blocked:
+            guard let deadline = engine.killDeadline else { return engine.killsImmediately ? 0 : 0.08 }
+            return max(0.02, deadline.timeIntervalSince(engine.now) / max(1, engine.config.grace))
+        }
+    }
+
+    private var dnsLabel: String {
+        guard engine.config.policySettings.needsDNS else { return "DNS OFF" }
+        guard let snap = engine.snapshot, let resolver = snap.dnsResolver, let code = snap.countries[resolver] else { return "DNS" }
+        return "DNS \(code)"
+    }
+
+    private var dnsHealth: (value: Double, color: Color) {
+        guard engine.config.policySettings.needsDNS else { return (0, Arcade.steel) }
+        guard engine.snapshot?.dnsResolver != nil else { return (0.3, Arcade.steelLight) }
+        switch engine.dnsFinding?.action {
+        case nil, .off: return (1, Arcade.life)
+        case .warn: return (0.5, Arcade.caution)
+        case .block: return (0.12, Arcade.blood)
+        case .kill: return (0, Arcade.blood)
+        }
+    }
+
+    private func timerText(_ phase: GuardEngine.Phase) -> String {
+        if engine.killsImmediately { return "KO" }
+        if case .paused(let until) = phase {
+            guard until != .distantFuture else { return "--" }
+            return "\(Int(ceil(until.timeIntervalSince(engine.now) / 60)))M"
+        }
+        if let deadline = engine.killDeadline {
+            let left = max(0, Int(deadline.timeIntervalSince(engine.now)))
+            return left < 1000 ? "\(left)" : "\(left / 60)M"
+        }
+        return "99"
     }
 
     private func subtitle(_ phase: GuardEngine.Phase) -> String {
@@ -97,17 +209,36 @@ private struct HeaderCard: View {
         case .paused(let until):
             return until == .distantFuture
                 ? "Без срока — программы не защищены"
-                : "До \(until.formatted(date: .omitted, time: .shortened)) — программы не защищены"
+                : "До \(until.formatted(date: .omitted, time: .shortened)) — без защиты"
         case .protected, .blocked:
             var parts: [String] = []
-            if let snap = engine.snapshot, let ip = snap.primaryIP, let code = snap.countries[ip] {
+            if case .blocked(let reason) = phase {
+                if case .dnsLeak = reason {
+                    parts.append(engine.killsImmediately ? "Утечка DNS — программы закрыты" : "Утечка DNS")
+                } else {
+                    parts.append(engine.frozenRuleIDs.isEmpty ? "IP не разрешён" : "Программы заморожены")
+                }
+            } else {
+                parts.append(engine.enabledRules.isEmpty ? "IP в порядке" : "Защищено")
+            }
+            if let code = engine.currentCountry {
                 parts.append(CountryInfo.label(code))
             }
-            if let last = engine.lastCheck {
-                parts.append(last.formatted(date: .omitted, time: .standard))
-            }
-            return parts.isEmpty ? "Ещё не проверял" : parts.joined(separator: " · ")
+            return parts.joined(separator: " · ")
         }
+    }
+}
+
+/// Round timer between the health bars.
+private struct RoundTimer: View {
+    let text: String
+    let urgent: Bool
+
+    var body: some View {
+        PixelText(text: text, scale: 3, colors: urgent ? [Color.white, Arcade.ember, Arcade.blood] : [Color.white, Arcade.gold, Arcade.ember])
+            .frame(minWidth: 44, minHeight: 30)
+            .background(Chamfer(cut: 4).fill(Arcade.night.opacity(0.85)))
+            .overlay(Chamfer(cut: 4).strokeBorder(Arcade.gold.opacity(0.8), lineWidth: 1))
     }
 }
 
@@ -142,12 +273,17 @@ private struct BlockedCard: View {
                     }
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Palette.danger)
-                    ProgressView(value: left, total: max(1, engine.config.grace))
-                        .tint(Palette.danger)
+                    SegmentBar(value: left / max(1, engine.config.grace))
                 }
             }
 
-            if let allowable = reason.allowable {
+            if case .dnsLeak(_, let country) = reason,
+               let rule = engine.config.dnsCountryRules.first(where: { $0.country == country }) {
+                Label("Правило для \(CountryInfo.label(country)): \(rule.action.title.lowercased()). Изменить можно в настройках.", systemImage: "drop.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let allowable = reason.allowable {
                 HStack {
                     if let code = allowable.country {
                         Button {
@@ -237,7 +373,7 @@ private struct NetworkCard: View {
                 if engine.config.checkIPv6 {
                     ipRow(label: "IPv6", consensus: snap.ipv6, snap: snap, total: IPProbe.ipv6Services.count)
                 }
-                if engine.config.dnsCheck != .off {
+                if engine.config.policySettings.needsDNS {
                     dnsRow(snap)
                 }
             }
@@ -287,8 +423,9 @@ private struct NetworkCard: View {
     }
 
     private func dnsRow(_ snap: NetworkSnapshot) -> some View {
-        let leak = dnsLeak(in: snap, rules: engine.config.allowRules)
-        let leakColor = engine.config.dnsCheck == .block ? Palette.danger : Palette.warning
+        let finding = engine.dnsFinding
+        let leak = finding?.leak
+        let leakColor = finding?.action.stops == true ? Palette.danger : Palette.warning
         return HStack(spacing: 8) {
             if let resolver = snap.dnsResolver {
                 StatusDot(color: leak != nil ? leakColor : (snap.countries[resolver] == nil ? .gray : Palette.running))
@@ -302,8 +439,8 @@ private struct NetworkCard: View {
                     .lineLimit(1)
                     .textSelection(.enabled)
                 Spacer(minLength: 0)
-                if leak != nil {
-                    Badge(text: "утечка", color: leakColor, symbol: "drop.fill")
+                if let finding {
+                    Badge(text: finding.action == .kill ? "утечка · K.O." : "утечка", color: leakColor, symbol: "drop.fill")
                 } else {
                     Badge(text: "ок", color: Palette.running)
                 }

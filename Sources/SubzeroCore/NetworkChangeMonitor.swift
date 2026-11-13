@@ -5,7 +5,7 @@ import Network
 /// (VPN up/down, Wi-Fi switch, cable plugged). The first path update is not reported.
 public final class NetworkChangeMonitor: @unchecked Sendable {
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "freezer.network-monitor")
+    private let queue = DispatchQueue(label: "subzero.network-monitor")
     // Touched only on `queue`.
     private var lastSignature: String?
     private let onChange: @Sendable (_ description: String) -> Void

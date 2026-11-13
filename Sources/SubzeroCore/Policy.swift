@@ -62,12 +62,29 @@ public struct NetworkSnapshot: Equatable, Sendable {
     public var primaryIP: IPAddress? { ipv4.agreedIP ?? ipv6.agreedIP }
 }
 
+/// What to do about a DNS leak.
 public enum DNSCheckMode: String, Codable, Sendable, CaseIterable {
     case off
     /// Show and notify, keep apps running.
     case warn
-    /// Treat as a block: freeze apps.
+    /// Treat as a block: freeze apps (killed after the usual grace, if enabled).
     case block
+    /// Freeze and kill protected apps right away, ignoring the grace period.
+    case kill
+
+    /// Stops protected apps.
+    public var stops: Bool { self == .block || self == .kill }
+}
+
+/// Explicit DNS behavior for a resolver located in one country.
+public struct DNSCountryRule: Codable, Hashable, Sendable {
+    public var country: String
+    public var action: DNSCheckMode
+
+    public init(country: String, action: DNSCheckMode) {
+        self.country = country.uppercased()
+        self.action = action
+    }
 }
 
 public struct DNSLeak: Equatable, Sendable {
@@ -79,14 +96,48 @@ public struct PolicySettings: Sendable, Equatable {
     public var minAgree: Int
     public var checkIPv6: Bool
     public var blockWhenOffline: Bool
+    /// DNS behavior for countries without an explicit rule.
     public var dnsCheck: DNSCheckMode
+    /// Explicit DNS behavior by resolver country (uppercase ISO code).
+    public var dnsCountries: [String: DNSCheckMode]
 
-    public init(minAgree: Int, checkIPv6: Bool, blockWhenOffline: Bool, dnsCheck: DNSCheckMode = .off) {
+    public init(
+        minAgree: Int, checkIPv6: Bool, blockWhenOffline: Bool,
+        dnsCheck: DNSCheckMode = .off, dnsCountries: [String: DNSCheckMode] = [:]
+    ) {
         self.minAgree = minAgree
         self.checkIPv6 = checkIPv6
         self.blockWhenOffline = blockWhenOffline
         self.dnsCheck = dnsCheck
+        self.dnsCountries = dnsCountries
     }
+
+    /// Whether the DNS resolver needs to be looked up at all.
+    public var needsDNS: Bool {
+        dnsCheck != .off || dnsCountries.values.contains { $0 != .off }
+    }
+}
+
+/// A DNS leak together with what to do about it.
+public struct DNSFinding: Equatable, Sendable {
+    public var leak: DNSLeak
+    public var action: DNSCheckMode
+}
+
+/// Applies the DNS settings to the observed resolver.
+///
+/// - A resolver in the exit IP's country is never a leak.
+/// - A country with an explicit rule uses that rule, even if the country is allowed.
+/// - Otherwise a resolver outside the allowed countries/networks gets the default action.
+public func dnsFinding(in snapshot: NetworkSnapshot, rules: AllowRules, settings: PolicySettings) -> DNSFinding? {
+    guard let resolver = snapshot.dnsResolver, let country = snapshot.countries[resolver]?.uppercased() else { return nil }
+    if let exit = snapshot.primaryIP, snapshot.countries[exit]?.uppercased() == country { return nil }
+    let leak = DNSLeak(resolver: resolver, country: country)
+    if let explicit = settings.dnsCountries[country] {
+        return explicit == .off ? nil : DNSFinding(leak: leak, action: explicit)
+    }
+    guard settings.dnsCheck != .off, dnsLeak(in: snapshot, rules: rules) != nil else { return nil }
+    return DNSFinding(leak: leak, action: settings.dnsCheck)
 }
 
 /// DNS goes through a resolver in a country that is neither allowed nor the
@@ -166,8 +217,8 @@ public func evaluate(_ snapshot: NetworkSnapshot, rules: AllowRules, settings: P
     if primary == nil {
         return settings.blockWhenOffline ? .blocked(.offline) : .allowed(nil)
     }
-    if settings.dnsCheck == .block, let leak = dnsLeak(in: snapshot, rules: rules) {
-        return .blocked(.dnsLeak(leak.resolver, country: leak.country))
+    if let finding = dnsFinding(in: snapshot, rules: rules, settings: settings), finding.action.stops {
+        return .blocked(.dnsLeak(finding.leak.resolver, country: finding.leak.country))
     }
     return .allowed(primary)
 }

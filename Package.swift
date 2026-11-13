@@ -2,24 +2,24 @@
 import PackageDescription
 
 let package = Package(
-    name: "Freezer",
+    name: "Subzero",
     platforms: [
         .macOS(.v15),
     ],
     targets: [
         .target(
-            name: "FreezerCore",
-            path: "Sources/FreezerCore"
+            name: "SubzeroCore",
+            path: "Sources/SubzeroCore"
         ),
         .executableTarget(
-            name: "Freezer",
-            dependencies: ["FreezerCore"],
-            path: "Sources/Freezer"
+            name: "Subzero",
+            dependencies: ["SubzeroCore"],
+            path: "Sources/Subzero"
         ),
         .testTarget(
-            name: "FreezerCoreTests",
-            dependencies: ["FreezerCore"],
-            path: "Tests/FreezerCoreTests"
+            name: "SubzeroCoreTests",
+            dependencies: ["SubzeroCore"],
+            path: "Tests/SubzeroCoreTests"
         ),
     ]
 )

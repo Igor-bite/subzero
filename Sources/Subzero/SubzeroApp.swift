@@ -1,9 +1,9 @@
 import AppKit
-import FreezerCore
+import SubzeroCore
 import SwiftUI
 
 @main
-struct FreezerApp: App {
+struct SubzeroApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -14,16 +14,16 @@ struct FreezerApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Freezer — настройки", id: SettingsView.windowID) {
+        Window("Subzero — настройки", id: SettingsView.windowID) {
             SettingsView(engine: appDelegate.engine)
         }
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
-        .commands { FreezerCommands() }
+        .commands { SubzeroCommands() }
     }
 }
 
-struct FreezerCommands: Commands {
+struct SubzeroCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -54,7 +54,7 @@ final class WindowOpener {
     }
 }
 
-/// Whether Freezer shows up in the Dock (default: yes).
+/// Whether Subzero shows up in the Dock (default: yes).
 @MainActor
 enum DockPolicy {
     static let key = "showInDock"
@@ -74,15 +74,8 @@ enum DockPolicy {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let engine: GuardEngine
+    let engine = GuardEngine()
     private var signalSources: [DispatchSourceSignal] = []
-
-    override init() {
-        // Before GuardEngine reads defaults: bring over values from older bundle ids.
-        DefaultsMigration.run()
-        engine = GuardEngine()
-        super.init()
-    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // One instance only: a second one would fight over SIGSTOP/SIGCONT.
@@ -188,29 +181,13 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let phase = engine.phase
-        let idle = phase == .protected && engine.enabledRules.isEmpty
         HStack(spacing: 4) {
-            Image(nsImage: Self.image(symbol: idle ? "shield" : phase.symbol, color: idle ? nil : phase.nsColor))
+            Image(nsImage: MenuBarArt.image(color: phase.nsColor))
             if let text = engine.menuBarText {
                 Text(text).monospacedDigit()
             }
         }
-        .accessibilityLabel("Freezer: \(engine.statusSummary)")
+        .accessibilityLabel("Subzero: \(engine.statusSummary)")
         .task { WindowOpener.shared.action = openWindow }
-    }
-
-    /// Menu bar images are monochrome templates unless we bake in a color.
-    static func image(symbol: String, color: NSColor?) -> NSImage {
-        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: "Freezer") ?? NSImage()
-        let size = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        guard let color else {
-            let image = base.withSymbolConfiguration(size) ?? base
-            image.isTemplate = true
-            return image
-        }
-        let config = size.applying(NSImage.SymbolConfiguration(hierarchicalColor: color))
-        let image = base.withSymbolConfiguration(config) ?? base
-        image.isTemplate = false
-        return image
     }
 }

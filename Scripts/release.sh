@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a release of Freezer for distribution via a Homebrew tap.
+# Builds a release of Subzero for distribution via a Homebrew tap.
 #
 # Usage:
 #   Scripts/release.sh <version> [--publish]
@@ -17,8 +17,8 @@
 #   BUILD_NUMBER    CFBundleVersion (default: number of git commits).
 #
 # Output (in dist/):
-#   Freezer-<version>.zip   archive to attach to the GitHub release
-#   freezer.rb              ready-to-commit cask for the tap repository
+#   Subzero-<version>.zip   archive to attach to the GitHub release
+#   subzero.rb              ready-to-commit cask for the tap repository
 #
 # --publish creates GitHub release v<version> with the zip via `gh`.
 # Requires a Developer ID signature and notarization.
@@ -48,8 +48,8 @@ fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-APP_NAME=${APP_NAME:-Freezer}
-BUNDLE_ID=${BUNDLE_ID:-com.klyuzhevigor.Freezer}
+APP_NAME=${APP_NAME:-Subzero}
+BUNDLE_ID=${BUNDLE_ID:-com.klyuzhevigor.subzero}
 CASK_TOKEN=$(tr '[:upper:]' '[:lower:]' <<<"$APP_NAME")
 APP_IDENTITY=${APP_IDENTITY:-}
 NOTARY_PROFILE=${NOTARY_PROFILE:-}
@@ -70,7 +70,7 @@ if [[ -z "${GITHUB_REPO:-}" ]]; then
   REMOTE=$(git remote get-url origin 2>/dev/null || true)
   GITHUB_REPO=$(sed -E -n 's#^(git@github\.com:|https://github\.com/)([^/]+/[^/.]+)(\.git)?$#\2#p' <<<"$REMOTE")
 fi
-GITHUB_REPO=${GITHUB_REPO:-OWNER/freezer}
+GITHUB_REPO=${GITHUB_REPO:-OWNER/subzero}
 
 if git rev-parse --git-dir >/dev/null 2>&1; then
   BUILD_NUMBER=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
