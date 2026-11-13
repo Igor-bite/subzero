@@ -68,7 +68,7 @@ Subzero        приложение (SwiftUI/AppKit), в публичный API 
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/Igor-bite/subzero.git", from: "0.2.0"),
+    .package(url: "https://github.com/Igor-bite/subzero.git", from: "0.3.0"),
 ],
 targets: [
     .target(name: "MyTool", dependencies: [
