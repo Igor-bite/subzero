@@ -1,5 +1,7 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
+import SubzeroSystem
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers

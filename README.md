@@ -34,17 +34,92 @@ swift test                          # только тесты
 
 ## Как устроено
 
-| Где | Что |
-|---|---|
-| `Sources/SubzeroCore/IPProbe.swift` | IPv4 спрашивается у 4 сервисов, IPv6 у 3, страна определяется через ipinfo.io → country.is → ipapi.co |
-| `Sources/SubzeroCore/Policy.swift` | Чистая логика: консенсус сервисов, вердикт (fail-closed), таймер «заморозить → закрыть» |
-| `Sources/SubzeroCore/Processes.swift` | Список процессов (`sysctl`), сопоставление с правилами, потомки, сигналы |
-| `Sources/SubzeroCore/NetworkChangeMonitor.swift` | Смена интерфейсов и шлюзов (`NWPathMonitor`) |
-| `Sources/Subzero/GuardEngine.swift` | Цикл проверок, сон и пробуждение, пауза, применение сигналов |
-| `Sources/Subzero/*View.swift` | Меню в строке меню и окно настроек |
-| `Sources/Subzero/Arcade.swift` | Аркадная дизайн-система: спрайты, пиксельный шрифт, панели, ледяной шар |
+Пакет разбит на слои. Каждый зависит только от слоёв выше:
+
+```
+SubzeroCore    чистые модели и решения, без побочных эффектов
+   ↑
+SubzeroSystem  адаптеры macOS: сеть, процессы, сон, файл настроек
+   ↑
+SubzeroEngine  оркестратор GuardEngine без UI
+   ↑
+Subzero        приложение (SwiftUI/AppKit), в публичный API не входит
+```
+
+| Модуль | Файлы | Что |
+|---|---|---|
+| `SubzeroCore` | `Policy.swift` | Консенсус сервисов, вердикт (fail-closed), утечки IPv6/DNS, таймер «заморозить → закрыть» (`Enforcer`) |
+| | `IPAddress.swift` | IPv4/IPv6 и CIDR |
+| | `Processes.swift` | Модель процесса, дерево, сопоставление с правилами и потомки |
+| | `Config.swift` | `GuardConfig`, `AppRule`, страны |
+| `SubzeroSystem` | `IPProbe.swift` | IPv4 у 4 сервисов, IPv6 у 3, страна через ipinfo.io → country.is → ipapi.co, DNS через `whoami.akamai.net` |
+| | `ProcessScanner.swift` | Список процессов (`sysctl`), сигналы |
+| | `NetworkChangeMonitor.swift`, `SleepWakeMonitor.swift` | Смена сети (`NWPathMonitor`), сон и пробуждение |
+| | `ConfigStore.swift` | JSON с настройками на диске |
+| `SubzeroEngine` | `GuardEngine.swift` | Цикл проверок, пауза, ручная заморозка, применение сигналов, события `GuardEvent` |
+| | `Dependencies.swift` | Протоколы `NetworkProbing` и `ProcessControlling` для подмены системы |
+| `Subzero` | `*View.swift`, `Arcade.swift` | Меню, настройки, аркадная дизайн-система |
+| | `EngineBridge.swift`, `Texts.swift` | Уведомления, бейдж Dock, русские тексты для событий и причин блокировки |
 
 Настройки хранятся в `~/Library/Application Support/Subzero/config.json`.
+
+## Подключение как библиотеки (SwiftPM)
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/Igor-bite/subzero.git", from: "0.2.0"),
+],
+targets: [
+    .target(name: "MyTool", dependencies: [
+        .product(name: "SubzeroEngine", package: "subzero"),
+    ]),
+]
+```
+
+Продукты:
+
+- **`SubzeroCore`** — только логика: вердикт по снимку сети, сопоставление процессов с правилами. Без сети и сигналов, удобно для тестов и своих движков.
+- **`SubzeroSystem`** — реальные адаптеры macOS поверх Core.
+- **`SubzeroEngine`** — готовый движок целиком.
+
+Чистое решение без побочных эффектов:
+
+```swift
+import SubzeroCore
+
+let ip = IPAddress("185.10.10.10")!
+let snapshot = NetworkSnapshot(ipv4: .agreed(ip, votes: 3), ipv6: .none, countries: [ip: "NL"])
+let verdict = evaluate(
+    snapshot,
+    rules: AllowRules(countries: ["NL", "DE"], networks: ["10.0.0.0/8"]),
+    settings: PolicySettings(minAgree: 2, checkIPv6: true, blockWhenOffline: true)
+)
+// .allowed(185.10.10.10)
+```
+
+Движок целиком:
+
+```swift
+import SubzeroCore
+import SubzeroEngine
+import SubzeroSystem
+
+@MainActor
+func run() {
+    let engine = GuardEngine(store: ConfigStore(url: myConfigURL))
+    engine.config.allowedCountries = ["NL"]
+    engine.config.apps = [AppRule(name: "Cursor", kind: .bundle(path: "/Applications/Cursor.app"))]
+    engine.onEvent = { event in print(event) }   // .blocked, .resumed, .killed, .pauseEnded, .dnsWarning
+    engine.start()
+    // При выходе обязательно: размораживает всё, что остановил движок.
+    // engine.shutdown()
+}
+```
+
+`GuardEngine` — `@MainActor @Observable`: состояние (`phase`, `controlledApps`, `snapshot`, `killDeadline`…) можно напрямую показывать в SwiftUI. Для тестов подставьте свои `NetworkProbing` и `ProcessControlling` и `observesSystem: false` (пример в `Tests/SubzeroEngineTests`).
+
+Важно: движок fail-closed. Пока нет первого вердикта, защищённые программы заморожены; `shutdown()` нужно вызывать при любом выходе хоста (включая `SIGTERM`), иначе программы останутся остановленными.
 
 ## Поведение
 

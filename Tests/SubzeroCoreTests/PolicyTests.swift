@@ -328,18 +328,6 @@ private func proc(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String? = 
     #expect(Set(targets.keys) == [50])
 }
 
-@Test func procArgsParsing() {
-    // argc = 2, exec path, padding, argv[0], argv[1], then env
-    var bytes: [UInt8] = []
-    withUnsafeBytes(of: Int32(2).littleEndian) { bytes.append(contentsOf: $0) }
-    bytes += Array("/opt/homebrew/bin/node".utf8) + [0, 0, 0]
-    bytes += Array("node".utf8) + [0]
-    bytes += Array("/opt/homebrew/bin/claude".utf8) + [0]
-    bytes += Array("HOME=/Users/u".utf8) + [0]
-    #expect(ProcessScanner.parseProcArgs(bytes) == ["node", "/opt/homebrew/bin/claude"])
-    #expect(ProcessScanner.parseProcArgs([1, 0]) == nil)
-}
-
 // MARK: - Config
 
 @Test func configDecodesMissingKeysWithDefaults() throws {

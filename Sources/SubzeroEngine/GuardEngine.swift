@@ -1,58 +1,29 @@
-import AppKit
+import Darwin
 import Foundation
-import SubzeroCore
 import Observation
-
-/// A row in the "programs" list: a protected rule or an app frozen by hand.
-struct ControlledApp: Identifiable, Equatable {
-    enum State: Equatable {
-        case notRunning
-        case running
-        case frozen
-    }
-
-    let id: UUID
-    let name: String
-    let kind: AppRuleKind
-    /// Covered by an enabled protection rule.
-    let isProtected: Bool
-    let state: State
-    /// Frozen by the user, independent of the IP.
-    let isManuallyFrozen: Bool
-    /// Protected, but the user let it run during the current block.
-    let isOverridden: Bool
-}
-
-/// A moment in the arena: the golem freezes apps with an ice ball, shatters them on a kill,
-/// or the fire spirit melts the ice when they are released.
-struct ArenaHit: Equatable {
-    enum Kind: Equatable { case freeze, shatter, thaw }
-
-    let id = UUID()
-    let names: [String]
-    let kinds: [AppRuleKind]
-    let at: Date
-    let kind: Kind
-
-    var shatter: Bool { kind == .shatter }
-}
-
-/// An app the user froze by hand. Persisted, so it stays frozen across restarts.
-struct ManualFreeze: Codable, Equatable {
-    var id: UUID
-    var name: String
-    var kind: AppRuleKind
-}
+import SubzeroCore
+import SubzeroSystem
 
 /// Orchestrates checks and enforcement. All state lives on the main actor.
 ///
 /// Enforcement is declarative: every tick computes the set of processes that
 /// should be stopped (auto-protected while blocked, plus manual freezes) and
 /// sends SIGSTOP/SIGCONT only for the difference.
+///
+/// The engine has no UI and no user-facing text. Hosts observe its state
+/// (`@Observable`) and react to `onEvent` (notifications, sounds, logs).
+///
+/// ```swift
+/// let engine = GuardEngine()
+/// engine.onEvent = { event in print(event) }
+/// engine.start()
+/// // ...
+/// engine.shutdown()   // releases everything Subzero stopped
+/// ```
 @MainActor
 @Observable
-final class GuardEngine {
-    enum Phase: Equatable {
+public final class GuardEngine {
+    public enum Phase: Equatable, Sendable {
         case checking
         case protected
         case blocked(BlockReason)
@@ -61,7 +32,8 @@ final class GuardEngine {
 
     // MARK: Published state
 
-    var config: GuardConfig {
+    /// Current settings. Every change is saved to the store and applied right away.
+    public var config: GuardConfig {
         didSet {
             guard config != oldValue else { return }
             persist()
@@ -69,53 +41,74 @@ final class GuardEngine {
         }
     }
 
-    private(set) var snapshot: NetworkSnapshot?
-    private(set) var verdict: Verdict?
-    private(set) var lastCheck: Date?
-    private(set) var isChecking = false
-    private(set) var pausedUntil: Date?
-    private(set) var killDeadline: Date?
+    public private(set) var snapshot: NetworkSnapshot?
+    public private(set) var verdict: Verdict?
+    public private(set) var lastCheck: Date?
+    public private(set) var isChecking = false
+    public private(set) var pausedUntil: Date?
+    public private(set) var killDeadline: Date?
     /// Protected rules whose processes are frozen because of the IP.
-    private(set) var frozenRuleIDs: Set<UUID> = []
-    private(set) var manualFreezes: [ManualFreeze] = []
+    public private(set) var frozenRuleIDs: Set<UUID> = []
+    public private(set) var manualFreezes: [ManualFreeze] = []
     /// Protected rules the user unfroze during the current block.
-    private(set) var overrides: Set<UUID> = []
-    private(set) var appStates: [UUID: ControlledApp.State] = [:]
+    public private(set) var overrides: Set<UUID> = []
+    public private(set) var appStates: [UUID: ControlledApp.State] = [:]
     /// Processes caught per subject (the app and all its descendants), refreshed every scan.
-    private(set) var appProcesses: [UUID: [ProcessRecord]] = [:]
-    /// Apps whose process list is expanded in the menu. UI state, not persisted.
-    var expandedApps: Set<UUID> = []
-    private(set) var lastError: String?
-    /// Last freeze/kill, drives the ice ball animation in the menu.
-    private(set) var lastHit: ArenaHit?
+    public private(set) var appProcesses: [UUID: [ProcessRecord]] = [:]
+    /// Apps whose process list is expanded in a host's UI. Not persisted, never read by the engine.
+    public var expandedApps: Set<UUID> = []
+    /// Last persistence error, if any.
+    public private(set) var lastError: String?
+    /// Last freeze/kill/release.
+    public private(set) var lastHit: EnforcementHit?
     /// Updated every tick so countdowns refresh.
-    private(set) var now = Date()
+    public private(set) var now = Date()
+
+    /// Called on the main actor for every `GuardEvent`.
+    @ObservationIgnored
+    public var onEvent: (@MainActor (GuardEvent) -> Void)?
 
     // MARK: Private state
 
-    private let store: ConfigStore
-    private let defaults: UserDefaults?
+    @ObservationIgnored private let store: ConfigStore
+    @ObservationIgnored private let defaults: UserDefaults?
     private static let manualKey = "manualFreezes"
-    private let probe = IPProbe()
-    private let notifier = Notifier()
-    private var enforcer = Enforcer()
-    private var frozenPIDs: Set<Int32> = []
-    private var lastScan = Date.distantPast
+    @ObservationIgnored private let probe: any NetworkProbing
+    @ObservationIgnored private let processes: any ProcessControlling
+    @ObservationIgnored private let observesSystem: Bool
+    @ObservationIgnored private var enforcer = Enforcer()
+    @ObservationIgnored private var frozenPIDs: Set<Int32> = []
+    @ObservationIgnored private var lastScan = Date.distantPast
     private var networkChangePending = true   // fail closed until the first check
     private var sleeping = false
-    private var announcedBlock = false
-    private var notifiedDNSResolver: IPAddress?
-    private var activeChecks = 0
-    private var started = false
+    @ObservationIgnored private var announcedBlock = false
+    @ObservationIgnored private var notifiedDNSResolver: IPAddress?
+    @ObservationIgnored private var activeChecks = 0
+    @ObservationIgnored private var started = false
 
-    private var loopTask: Task<Void, Never>?
-    private var ticker: Timer?
-    private var networkMonitor: NetworkChangeMonitor?
-    private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var loopTask: Task<Void, Never>?
+    @ObservationIgnored private var ticker: Timer?
+    @ObservationIgnored private var networkMonitor: NetworkChangeMonitor?
+    @ObservationIgnored private var sleepMonitor: SleepWakeMonitor?
 
-    init(store: ConfigStore = .standard, defaults: UserDefaults? = .standard) {
+    /// - Parameters:
+    ///   - store: where the config is loaded from and saved to.
+    ///   - defaults: where manual freezes are kept across restarts; `nil` keeps them in memory only.
+    ///   - probe: source of network observations.
+    ///   - processes: process listing and signals.
+    ///   - observesSystem: react to network changes and sleep/wake. Turn off in tests.
+    public init(
+        store: ConfigStore = .standard,
+        defaults: UserDefaults? = .standard,
+        probe: any NetworkProbing = IPProbe(),
+        processes: any ProcessControlling = SystemProcessController(),
+        observesSystem: Bool = true
+    ) {
         self.store = store
         self.defaults = defaults
+        self.probe = probe
+        self.processes = processes
+        self.observesSystem = observesSystem
         self.config = store.load()
         if let data = defaults?.data(forKey: Self.manualKey), let saved = try? JSONDecoder().decode([ManualFreeze].self, from: data) {
             manualFreezes = saved
@@ -124,25 +117,27 @@ final class GuardEngine {
 
     // MARK: Lifecycle
 
-    func start() {
+    /// Starts checking and enforcing. Idempotent.
+    public func start() {
         guard !started else { return }
         started = true
-        notifier.enabled = config.notifications
-        notifier.requestAuthorizationIfNeeded()
 
-        let monitor = NetworkChangeMonitor { [weak self] _ in
-            Task { @MainActor in self?.networkChanged() }
+        if observesSystem {
+            let monitor = NetworkChangeMonitor { [weak self] _ in
+                Task { @MainActor in self?.networkChanged() }
+            }
+            monitor.start()
+            networkMonitor = monitor
+
+            let sleep = SleepWakeMonitor { [weak self] event in
+                switch event {
+                case .willSleep: self?.willSleep()
+                case .didWake: self?.didWake()
+                }
+            }
+            sleep.start()
+            sleepMonitor = sleep
         }
-        monitor.start()
-        networkMonitor = monitor
-
-        let center = NSWorkspace.shared.notificationCenter
-        observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.willSleep() }
-        })
-        observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.didWake() }
-        })
 
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -154,25 +149,24 @@ final class GuardEngine {
         requestCheck()
     }
 
-    /// Unfreezes everything we stopped (manual freezes come back on next launch). Called on quit.
-    func shutdown() {
+    /// Unfreezes everything we stopped (manual freezes come back on next start). Call on quit.
+    public func shutdown() {
         guard started else { return }
         let targets = currentTargets().keys
         started = false
         loopTask?.cancel()
         ticker?.invalidate()
         networkMonitor?.stop()
-        observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
-        observers.removeAll()
+        sleepMonitor?.stop()
 
-        ProcessSignaler.send(SIGCONT, to: Set(targets).union(frozenPIDs))
+        processes.send(SIGCONT, to: Set(targets).union(frozenPIDs))
         frozenPIDs.removeAll()
         frozenRuleIDs.removeAll()
     }
 
     // MARK: Derived state
 
-    var phase: Phase {
+    public var phase: Phase {
         if let until = pausedUntil, until > now { return .paused(until: until) }
         if networkChangePending || sleeping { return .checking }
         switch verdict {
@@ -182,31 +176,42 @@ final class GuardEngine {
         }
     }
 
-    var enabledRules: [AppRule] { config.apps.filter(\.enabled) }
+    public var enabledRules: [AppRule] { config.apps.filter(\.enabled) }
 
-    var frozenAppNames: [String] {
+    public var frozenAppNames: [String] {
         config.apps.filter { frozenRuleIDs.contains($0.id) }.map(\.name)
     }
 
+    /// How many apps stand frozen right now (any reason).
+    public var frozenAppCount: Int {
+        appStates.values.filter { $0 == .frozen }.count
+    }
+
     /// DNS leak with the action the settings assign to it (default or per-country rule).
-    var dnsFinding: DNSFinding? {
+    public var dnsFinding: DNSFinding? {
         guard let snapshot else { return nil }
         return SubzeroCore.dnsFinding(in: snapshot, rules: config.allowRules, settings: config.policySettings)
     }
 
     /// DNS leak shown as a warning only (apps keep running).
-    var dnsWarning: DNSLeak? {
+    public var dnsWarning: DNSLeak? {
         guard let finding = dnsFinding, finding.action == .warn else { return nil }
         return finding.leak
     }
 
     /// The current block is a DNS leak whose rule says "kill right away".
-    var killsImmediately: Bool {
+    public var killsImmediately: Bool {
         guard case .blocked(.dnsLeak) = phase else { return false }
         return dnsFinding?.action == .kill
     }
 
-    var controlledApps: [ControlledApp] {
+    /// Country of the current external IP, if known.
+    public var currentCountry: String? {
+        guard let snapshot, let ip = snapshot.primaryIP else { return nil }
+        return snapshot.countries[ip]
+    }
+
+    public var controlledApps: [ControlledApp] {
         let rules = enabledRules
         let ruleKinds = Set(rules.map(\.kind))
         let manualKinds = Set(manualFreezes.map(\.kind))
@@ -237,32 +242,39 @@ final class GuardEngine {
 
     // MARK: User actions: protection
 
-    func requestCheck() {
+    /// Restarts the check loop with an immediate check.
+    public func requestCheck() {
         loopTask?.cancel()
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
     }
 
-    func pause(for duration: TimeInterval?) {
+    /// Runs one check now and applies its verdict. Does not touch the background loop.
+    public func checkNow() async {
+        await performCheck()
+    }
+
+    /// Stops enforcing for `duration` seconds, or until `endPause()` when `nil`.
+    public func pause(for duration: TimeInterval?) {
         pausedUntil = duration.map { Date().addingTimeInterval($0) } ?? .distantFuture
         tick()
     }
 
-    func endPause() {
+    public func endPause() {
         pausedUntil = nil
         networkChangePending = true
         tick()
         requestCheck()
     }
 
-    func allowIP(_ ip: IPAddress) {
+    public func allowIP(_ ip: IPAddress) {
         let text = ip.description
         guard !config.allowedNetworks.contains(text) else { return }
         config.allowedNetworks.append(text)
     }
 
-    func allowCountry(_ code: String) {
+    public func allowCountry(_ code: String) {
         let upper = code.uppercased()
         guard !config.allowedCountries.contains(upper) else { return }
         config.allowedCountries.append(upper)
@@ -271,7 +283,7 @@ final class GuardEngine {
     // MARK: User actions: manual control
 
     /// Freeze now and keep frozen until unfrozen by hand, whatever the IP.
-    func freezeManually(kind: AppRuleKind, name: String) {
+    public func freezeManually(kind: AppRuleKind, name: String) {
         if let rule = enabledRules.first(where: { $0.kind == kind }) {
             overrides.remove(rule.id)
         }
@@ -280,15 +292,15 @@ final class GuardEngine {
             saveManualFreezes()
         }
         reconcile(force: true)
-        lastHit = ArenaHit(names: [name], kinds: [kind], at: Date(), kind: .freeze)
+        lastHit = EnforcementHit(names: [name], kinds: [kind], at: Date(), kind: .freeze)
     }
 
-    func freeze(_ app: ControlledApp) {
+    public func freeze(_ app: ControlledApp) {
         freezeManually(kind: app.kind, name: app.name)
     }
 
     /// Unfreeze now. A protected app unfrozen during a block runs until the block ends.
-    func unfreeze(_ app: ControlledApp) {
+    public func unfreeze(_ app: ControlledApp) {
         manualFreezes.removeAll { $0.kind == app.kind }
         saveManualFreezes()
         if app.isProtected && shouldBlock {
@@ -296,20 +308,20 @@ final class GuardEngine {
         }
         reconcile(force: true)
         if app.state == .frozen {
-            lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .thaw)
+            lastHit = EnforcementHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .thaw)
         }
     }
 
     /// SIGKILL every process of the app right now.
-    func forceKill(_ app: ControlledApp) {
+    public func forceKill(_ app: ControlledApp) {
         manualFreezes.removeAll { $0.kind == app.kind }
         saveManualFreezes()
-        let processes = ProcessScanner.snapshot(includeInterpreterArguments: app.kind.needsArguments)
-        let victims = ProcessMatcher.targets(processes: processes, rules: [(app.id, app.kind)], excludingPIDs: [getpid()])
-        ProcessSignaler.send(SIGKILL, to: victims.keys)
+        let records = processes.snapshot(includeInterpreterArguments: app.kind.needsArguments)
+        let victims = ProcessMatcher.targets(processes: records, rules: [(app.id, app.kind)], excludingPIDs: [getpid()])
+        processes.send(SIGKILL, to: Set(victims.keys))
         frozenPIDs.subtract(victims.keys)
         reconcile(force: true)
-        lastHit = ArenaHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .shatter)
+        lastHit = EnforcementHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .shatter)
     }
 
     // MARK: Check loop
@@ -339,21 +351,22 @@ final class GuardEngine {
         lastCheck = Date()
         networkChangePending = false
         verdict = evaluate(snap, rules: config.allowRules, settings: config.policySettings)
-        notifyDNSWarningIfNeeded()
+        reportDNSWarningIfNeeded()
         tick()
     }
 
-    private func notifyDNSWarningIfNeeded() {
+    private func reportDNSWarningIfNeeded() {
         guard let leak = dnsWarning else {
             notifiedDNSResolver = nil
             return
         }
         guard notifiedDNSResolver != leak.resolver else { return }
         notifiedDNSResolver = leak.resolver
-        notifier.post(
-            title: "Возможна утечка DNS",
-            body: "DNS-запросы идут через резолвер в \(CountryInfo.flag(leak.country)) \(CountryInfo.name(leak.country)), а не через страну VPN."
-        )
+        emit(.dnsWarning(leak))
+    }
+
+    private func emit(_ event: GuardEvent) {
+        onEvent?(event)
     }
 
     // MARK: Events
@@ -380,24 +393,19 @@ final class GuardEngine {
     }
 
     private func configChanged(from old: GuardConfig) {
-        notifier.enabled = config.notifications
-        if old.notifications != config.notifications, config.notifications {
-            notifier.requestAuthorizationIfNeeded()
-        }
         // Re-judge the last observation right away (e.g. "allow this country").
         if let snapshot {
             verdict = evaluate(snapshot, rules: config.allowRules, settings: config.policySettings)
         }
         let enabledIDs = Set(enabledRules.map(\.id))
         overrides.formIntersection(enabledIDs)
+        guard started else { return }
         if old.checkIPv6 != config.checkIPv6 || old.checkInterval != config.checkInterval
             || old.minAgree != config.minAgree || old.policySettings.needsDNS != config.policySettings.needsDNS {
             requestCheck()
         }
-        if started {
-            tick()
-            reconcile(force: true)
-        }
+        tick()
+        reconcile(force: true)
     }
 
     private func persist() {
@@ -405,7 +413,7 @@ final class GuardEngine {
             try store.save(config)
             lastError = nil
         } catch {
-            lastError = "Не удалось сохранить настройки: \(error.localizedDescription)"
+            lastError = error.localizedDescription
         }
     }
 
@@ -439,8 +447,8 @@ final class GuardEngine {
     private func scan() -> (targets: [Int32: UUID], processes: [ProcessRecord]) {
         let subjects = subjects
         guard !subjects.isEmpty else { return ([:], []) }
-        let processes = ProcessScanner.snapshot(includeInterpreterArguments: subjects.contains { $0.kind.needsArguments })
-        return (ProcessMatcher.targets(processes: processes, rules: subjects, excludingPIDs: [getpid()]), processes)
+        let records = processes.snapshot(includeInterpreterArguments: subjects.contains { $0.kind.needsArguments })
+        return (ProcessMatcher.targets(processes: records, rules: subjects, excludingPIDs: [getpid()]), records)
     }
 
     private func tick() {
@@ -449,7 +457,7 @@ final class GuardEngine {
         if let until = pausedUntil, until <= now {
             pausedUntil = nil
             networkChangePending = true
-            notifier.post(title: "Пауза закончилась", body: "Проверяю IP и снова защищаю программы.")
+            emit(.pauseEnded)
             requestCheck()
         }
 
@@ -464,7 +472,8 @@ final class GuardEngine {
 
         if action == .resume, announcedBlock {
             announcedBlock = false
-            notifier.post(title: "Программы снова работают", body: statusLine())
+            let ip: IPAddress? = if case .allowed(let ip) = verdict { ip } else { nil }
+            emit(.resumed(ip: ip, country: ip.flatMap { snapshot?.countries[$0] }))
         }
         announceIfNeeded()
     }
@@ -479,7 +488,7 @@ final class GuardEngine {
 
         let scanned = scan()
         var targets = scanned.targets
-        let processes = scanned.processes
+        let records = scanned.processes
         let autoIDs = Set(enabledRules.map(\.id)).subtracting(overrides)
         let manualIDs = manualSubjectIDs
 
@@ -487,15 +496,13 @@ final class GuardEngine {
             // Kill what is frozen because of the IP; hand-frozen apps stay frozen.
             let victims = targets.filter { autoIDs.contains($0.value) && !manualIDs.contains($0.value) }
             if !victims.isEmpty {
-                ProcessSignaler.send(SIGKILL, to: victims.keys)
+                processes.send(SIGKILL, to: Set(victims.keys))
                 frozenPIDs.subtract(victims.keys)
                 targets = targets.filter { victims[$0.key] == nil }
                 let ids = Set(victims.values)
-                let names = config.apps.filter { ids.contains($0.id) }.map(\.name)
                 let killed = config.apps.filter { ids.contains($0.id) }
-                lastHit = ArenaHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), kind: .shatter)
-                let why = killsImmediately ? "Утечка DNS" : "Разрешённый IP не вернулся"
-                notifier.post(title: "K.O. — программы закрыты", body: "\(why): \(names.joined(separator: ", "))")
+                lastHit = EnforcementHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), kind: .shatter)
+                emit(.killed(apps: killed.map(\.name), cause: killsImmediately ? .dnsLeak : .graceExpired))
             }
         }
 
@@ -512,18 +519,18 @@ final class GuardEngine {
         var toContinue = frozenPIDs.subtracting(desired)
         if action == .resume {
             // Also release matches we did not track: recovers apps left
-            // stopped by a previous crash of Subzero.
+            // stopped by a previous crash of the host.
             let autoPIDs = targets.filter { autoIDs.contains($0.value) }.keys
             toContinue.formUnion(Set(autoPIDs).subtracting(desired))
         }
-        if !toStop.isEmpty { ProcessSignaler.send(SIGSTOP, to: toStop) }
-        if !toContinue.isEmpty { ProcessSignaler.send(SIGCONT, to: toContinue) }
+        if !toStop.isEmpty { processes.send(SIGSTOP, to: toStop) }
+        if !toContinue.isEmpty { processes.send(SIGCONT, to: toContinue) }
         frozenPIDs = desired
 
         // Kernel state comes from the scan, taken before the signals above:
         // patch in what we just sent, the next scan reports the real state.
         var processesByID: [UUID: [ProcessRecord]] = [:]
-        for record in processes {
+        for record in records {
             guard let id = targets[record.pid] else { continue }
             let stopped = toStop.contains(record.pid) ? true : toContinue.contains(record.pid) ? false : record.isStopped
             processesByID[id, default: []].append(record.with(isStopped: stopped))
@@ -541,42 +548,31 @@ final class GuardEngine {
         }
         if appStates != states { appStates = states }
 
-        // Dock badge: how many apps stand frozen right now.
-        let frozenCount = states.values.filter { $0 == .frozen }.count
-        let badge = frozenCount > 0 ? "\(frozenCount)" : nil
-        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
-
         let autoFrozen = Set(targets.filter { desired.contains($0.key) && autoIDs.contains($0.value) && !manualIDs.contains($0.value) }.values)
         let newFrozenRules = blocked ? autoFrozen : []
         let justFrozen = newFrozenRules.subtracting(frozenRuleIDs)
         if !justFrozen.isEmpty {
             let hit = config.apps.filter { justFrozen.contains($0.id) }
-            lastHit = ArenaHit(names: hit.map(\.name), kinds: hit.map(\.kind), at: Date(), kind: .freeze)
+            lastHit = EnforcementHit(names: hit.map(\.name), kinds: hit.map(\.kind), at: Date(), kind: .freeze)
         } else if !blocked, !frozenRuleIDs.isEmpty {
             // The block is over: apps frozen because of the IP are released.
             let released = config.apps.filter { frozenRuleIDs.contains($0.id) }
-            lastHit = ArenaHit(names: released.map(\.name), kinds: released.map(\.kind), at: Date(), kind: .thaw)
+            lastHit = EnforcementHit(names: released.map(\.name), kinds: released.map(\.kind), at: Date(), kind: .thaw)
         }
         if frozenRuleIDs != newFrozenRules { frozenRuleIDs = newFrozenRules }
     }
 
-    /// Notify once per block episode, and only for real verdicts (not the
+    /// Report once per block episode, and only for real verdicts (not the
     /// sub-second freeze while re-checking after a network change).
     private func announceIfNeeded() {
         guard !announcedBlock, case .blocked(let reason) = phase, !frozenRuleIDs.isEmpty else { return }
         announcedBlock = true
-        notifier.post(title: "Программы заморожены: \(frozenAppNames.joined(separator: ", "))", body: reason.text)
-    }
-
-    private func statusLine() -> String {
-        guard let ip = verdict.flatMap({ if case .allowed(let ip) = $0 { ip } else { nil } }) else { return "IP в порядке" }
-        let country = snapshot?.countries[ip].map { " \(CountryInfo.flag($0)) \($0)" } ?? ""
-        return "IP \(ip)\(country)"
+        emit(.blocked(reason, apps: frozenAppNames))
     }
 
     #if DEBUG
     /// Puts the engine into a fixed state for UI snapshots. Never starts checks or signals.
-    func debugApply(
+    public func debugApply(
         snapshot: NetworkSnapshot?,
         verdict: Verdict?,
         appStates: [UUID: ControlledApp.State] = [:],
@@ -585,7 +581,7 @@ final class GuardEngine {
         overrides: Set<UUID> = [],
         pausedUntil: Date? = nil,
         killDeadline: Date? = nil,
-        lastHit: ArenaHit? = nil,
+        lastHit: EnforcementHit? = nil,
         appProcesses: [UUID: [ProcessRecord]] = [:],
         expandedApps: Set<UUID> = []
     ) {
@@ -605,50 +601,4 @@ final class GuardEngine {
         self.now = Date()
     }
     #endif
-}
-
-extension AppRuleKind {
-    var needsArguments: Bool {
-        if case .patterns = self { return true }
-        return false
-    }
-}
-
-// MARK: - Text
-
-extension BlockReason {
-    var text: String {
-        switch self {
-        case .offline:
-            return "Сервисы IP не отвечают: нет интернета или запросы блокируются."
-        case .servicesDisagree(let ips):
-            return "Сервисы видят разные IP (\(ips.map(\.description).joined(separator: ", "))) — похоже на утечку."
-        case .notEnoughAnswers(let got, let need):
-            return "IP подтвердили \(got) из \(need) нужных сервисов."
-        case .countryUnknown(let ip):
-            return "Не удалось определить страну для \(ip)."
-        case .notAllowed(let ip, let country):
-            return "IP \(ip)\(country.map { " (\(CountryInfo.flag($0)) \(CountryInfo.name($0)))" } ?? "") не разрешён."
-        case .ipv6Leak(let ip, let country):
-            return "Утечка IPv6: \(ip)\(country.map { " (\(CountryInfo.flag($0)) \($0))" } ?? "") идёт мимо VPN."
-        case .ipv6Disagree:
-            return "Сервисы IPv6 видят разные адреса — похоже на утечку."
-        case .dnsLeak(let resolver, let country):
-            return "Утечка DNS: запросы идут через резолвер \(resolver) в \(CountryInfo.flag(country)) \(CountryInfo.name(country))."
-        }
-    }
-
-    /// Address and country the user could allow to resolve this block.
-    var allowable: (ip: IPAddress, country: String?)? {
-        switch self {
-        case .notAllowed(let ip, let country), .ipv6Leak(let ip, let country):
-            return (ip, country)
-        case .countryUnknown(let ip):
-            return (ip, nil)
-        case .dnsLeak(let ip, let country):
-            return (ip, country)
-        default:
-            return nil
-        }
-    }
 }

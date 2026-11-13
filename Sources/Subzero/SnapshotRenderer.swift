@@ -1,6 +1,8 @@
 #if DEBUG
 import AppKit
 import SubzeroCore
+import SubzeroEngine
+import SubzeroSystem
 import SwiftUI
 
 /// Debug-only: `Subzero --render-snapshots <dir>` renders the UI with fake data
@@ -97,7 +99,7 @@ enum SnapshotRenderer {
                 snapshot: NetworkSnapshot(ipv4: .agreed(nl, votes: 4), ipv6: .none, countries: [nl: "NL"]),
                 verdict: .allowed(nl),
                 appStates: [cursor: .running, chrome: .running],
-                lastHit: ArenaHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .thaw)
+                lastHit: EnforcementHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .thaw)
             )
             return engine
         }
@@ -110,7 +112,7 @@ enum SnapshotRenderer {
                 frozenRuleIDs: [cursor, chrome],
                 killDeadline: Date().addingTimeInterval(299),
                 // Capture happens ~0.4 s after the view is installed.
-                lastHit: ArenaHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .freeze)
+                lastHit: EnforcementHit(names: ["Cursor"], kinds: [.bundle(path: "/Applications/Cursor.app")], at: Date().addingTimeInterval(0.4 - age), kind: .freeze)
             )
             return engine
         }

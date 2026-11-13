@@ -1,5 +1,7 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
+import SubzeroSystem
 import SwiftUI
 
 struct MenuView: View {
@@ -379,7 +381,7 @@ private struct SetupHints: View {
             }
         }
         if let error = engine.lastError {
-            Text(error).font(.caption).foregroundStyle(Palette.danger)
+            Text("Не удалось сохранить настройки: \(error)").font(.caption).foregroundStyle(Palette.danger)
         }
     }
 }

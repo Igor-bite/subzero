@@ -1,4 +1,5 @@
 import Foundation
+import SubzeroCore
 import Network
 
 /// Reports when the set of network interfaces, gateways or reachability changes

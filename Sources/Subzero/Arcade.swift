@@ -1,5 +1,6 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
 import SwiftUI
 
 // Arcade fighting-game look: pixel sprites, a 5×7 pixel font, chamfered panels.
@@ -515,7 +516,7 @@ enum IceBall {
 /// Plays a throw over the arena: ball from the golem's hand to the target app,
 /// then the app freezes in a block of ice (or shatters on a kill).
 struct ArenaThrow: View {
-    let hit: ArenaHit
+    let hit: EnforcementHit
     /// Where the ball leaves the hand, in the arena's coordinates.
     let hand: CGPoint
 
@@ -571,7 +572,7 @@ struct ArenaThrow: View {
 
 /// The struck app: encased in ice, or shattered into red shards.
 private struct ImpactView: View {
-    let hit: ArenaHit
+    let hit: EnforcementHit
     let elapsed: TimeInterval
 
     var body: some View {
@@ -635,7 +636,7 @@ struct SegmentBar: View {
 
 // MARK: - Fire spirit and thaw
 
-extension ArenaHit {
+extension EnforcementHit {
     /// How long the scene for this hit stays on screen.
     var duration: TimeInterval { kind == .thaw ? Thaw.total : IceBall.total }
 }
@@ -749,7 +750,7 @@ enum Thaw {
 
 /// Ember flies in, throws a fireball at the frozen app and the ice melts away.
 private struct ThawScene: View {
-    let hit: ArenaHit
+    let hit: EnforcementHit
 
     var body: some View {
         TimelineView(.periodic(from: hit.at, by: 1 / 30)) { timeline in

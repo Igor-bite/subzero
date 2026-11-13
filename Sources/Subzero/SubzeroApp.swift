@@ -1,5 +1,6 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
 import SwiftUI
 
 @main
@@ -80,6 +81,7 @@ enum DockPolicy {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let engine = GuardEngine()
+    private lazy var bridge = EngineBridge(engine: engine)
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -114,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             source.resume()
             signalSources.append(source)
         }
+        bridge.start()
         engine.start()
 
         // Nothing configured yet: show settings right away.

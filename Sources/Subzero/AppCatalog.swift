@@ -1,5 +1,6 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
 
 enum AppCatalog {
     /// Apps commonly worth protecting; shown when installed.

@@ -90,6 +90,11 @@ public struct DNSCountryRule: Codable, Hashable, Sendable {
 public struct DNSLeak: Equatable, Sendable {
     public var resolver: IPAddress
     public var country: String
+
+    public init(resolver: IPAddress, country: String) {
+        self.resolver = resolver
+        self.country = country
+    }
 }
 
 public struct PolicySettings: Sendable, Equatable {
@@ -122,6 +127,11 @@ public struct PolicySettings: Sendable, Equatable {
 public struct DNSFinding: Equatable, Sendable {
     public var leak: DNSLeak
     public var action: DNSCheckMode
+
+    public init(leak: DNSLeak, action: DNSCheckMode) {
+        self.leak = leak
+        self.action = action
+    }
 }
 
 /// Applies the DNS settings to the observed resolver.
@@ -159,6 +169,20 @@ public enum BlockReason: Equatable, Sendable {
     case ipv6Leak(IPAddress, country: String?)
     case ipv6Disagree([IPAddress])
     case dnsLeak(IPAddress, country: String)
+
+    /// Address and country the user could allow to resolve this block.
+    public var allowable: (ip: IPAddress, country: String?)? {
+        switch self {
+        case .notAllowed(let ip, let country), .ipv6Leak(let ip, let country):
+            return (ip, country)
+        case .countryUnknown(let ip):
+            return (ip, nil)
+        case .dnsLeak(let ip, let country):
+            return (ip, country)
+        default:
+            return nil
+        }
+    }
 }
 
 public enum Verdict: Equatable, Sendable {

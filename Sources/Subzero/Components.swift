@@ -1,5 +1,6 @@
 import AppKit
 import SubzeroCore
+import SubzeroEngine
 import SwiftUI
 
 // MARK: - Status palette
@@ -276,12 +277,6 @@ struct AppControls: View {
 }
 
 extension GuardEngine {
-    /// Country of the current external IP, if known.
-    var currentCountry: String? {
-        guard let snapshot, let ip = snapshot.primaryIP else { return nil }
-        return snapshot.countries[ip]
-    }
-
     /// Text next to the menu bar icon, per the user's choice.
     var menuBarText: String? {
         switch config.menuBarText {

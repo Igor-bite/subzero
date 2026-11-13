@@ -1,7 +1,8 @@
 import Darwin
 import Foundation
 import Testing
-@testable import SubzeroCore
+import SubzeroCore
+@testable import SubzeroSystem
 
 @Test func scannerSeesCurrentProcessQuickly() {
     let clock = ContinuousClock()
@@ -103,4 +104,18 @@ private func rec(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String = "?
     let logins = records.filter { $0.path == "/usr/bin/login" }
     #expect(logins.isEmpty, "root-owned login must not be listed")
     #expect(records.contains { $0.pid == getpid() })
+}
+
+// MARK: - KERN_PROCARGS2
+
+@Test func procArgsParsing() {
+    // argc = 2, exec path, padding, argv[0], argv[1], then env
+    var bytes: [UInt8] = []
+    withUnsafeBytes(of: Int32(2).littleEndian) { bytes.append(contentsOf: $0) }
+    bytes += Array("/opt/homebrew/bin/node".utf8) + [0, 0, 0]
+    bytes += Array("node".utf8) + [0]
+    bytes += Array("/opt/homebrew/bin/claude".utf8) + [0]
+    bytes += Array("HOME=/Users/u".utf8) + [0]
+    #expect(ProcessScanner.parseProcArgs(bytes) == ["node", "/opt/homebrew/bin/claude"])
+    #expect(ProcessScanner.parseProcArgs([1, 0]) == nil)
 }

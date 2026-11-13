@@ -1,4 +1,5 @@
 import Foundation
+import SubzeroCore
 
 /// Asks several independent services for the external IP and resolves its country.
 public actor IPProbe {
