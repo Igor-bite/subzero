@@ -40,6 +40,7 @@ struct MenuView: View {
             SetupHints(engine: engine, openSettings: openSettings)
             NetworkCard(engine: engine)
             AppsCard(engine: engine)
+            SafariCard(engine: engine)
             FooterBar(engine: engine, openSettings: openSettings)
         }
         .padding(12)
@@ -164,7 +165,7 @@ private struct HeaderCard: View {
         case .checking: "SCAN"
         case .protected: engine.enabledRules.isEmpty ? "READY" : "FIGHT!"
         case .blocked:
-            engine.killsImmediately ? "K.O." : (engine.frozenRuleIDs.isEmpty ? "BLOCK" : "FROZEN!")
+            engine.killsImmediately ? "K.O." : (engine.hasFrozenTargets ? "FROZEN!" : "BLOCK")
         case .paused: "PAUSE"
         }
     }
@@ -174,7 +175,7 @@ private struct HeaderCard: View {
         case .checking: [Arcade.frost, Arcade.ice, Arcade.iceDeep]
         case .protected: [Color(red: 1, green: 0.97, blue: 0.75), Arcade.gold, Arcade.ember]
         case .blocked:
-            engine.killsImmediately || engine.frozenRuleIDs.isEmpty
+            engine.killsImmediately || !engine.hasFrozenTargets
                 ? [Color(red: 1, green: 0.85, blue: 0.6), Arcade.ember, Arcade.blood]
                 : [Arcade.frost, Arcade.ice, Arcade.iceDeep]
         case .paused: [Color(red: 1, green: 0.95, blue: 0.8), Arcade.caution, Arcade.ember]
@@ -242,10 +243,10 @@ private struct HeaderCard: View {
                 if case .dnsLeak = reason {
                     parts.append(engine.killsImmediately ? "Утечка DNS — программы закрыты" : "Утечка DNS")
                 } else {
-                    parts.append(engine.frozenRuleIDs.isEmpty ? "IP не разрешён" : "Программы заморожены")
+                    parts.append(engine.hasFrozenTargets ? "Программы заморожены" : "IP не разрешён")
                 }
             } else {
-                parts.append(engine.enabledRules.isEmpty ? "IP в порядке" : "Защищено")
+                parts.append(engine.enabledRules.isEmpty && engine.controlledSites.isEmpty ? "IP в порядке" : "Защищено")
             }
             if let code = engine.currentCountry {
                 parts.append(CountryInfo.label(code))
@@ -282,14 +283,15 @@ private struct BlockedCard: View {
                 Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Palette.danger)
             }
 
-            if !engine.frozenAppNames.isEmpty {
-                Label(engine.frozenAppNames.joined(separator: ", "), systemImage: "snowflake")
+            let frozenNames = engine.frozenAppNames + engine.frozenSiteNames
+            if !frozenNames.isEmpty {
+                Label(frozenNames.joined(separator: ", "), systemImage: "snowflake")
                     .font(.callout)
                     .foregroundStyle(Palette.frozen)
                     .lineLimit(2)
             }
 
-            if let deadline = engine.killDeadline, !engine.frozenRuleIDs.isEmpty {
+            if let deadline = engine.killDeadline, engine.hasFrozenTargets {
                 let left = max(0, deadline.timeIntervalSince(engine.now))
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -370,7 +372,8 @@ private struct SetupHints: View {
                 }
             }
         }
-        if engine.enabledRules.isEmpty && engine.manualFreezes.isEmpty {
+        if engine.enabledRules.isEmpty && engine.manualFreezes.isEmpty
+            && (engine.controlledSites.isEmpty || engine.safariLink == .silent) {
             Card(tint: .blue) {
                 HStack {
                     Label("Не выбраны программы для защиты.", systemImage: "app.dashed").font(.callout)
@@ -582,6 +585,60 @@ private struct OtherAppsMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Заморозить любую запущенную программу вручную")
+    }
+}
+
+// MARK: - Safari
+
+private struct SafariCard: View {
+    let engine: GuardEngine
+    private let safari = SafariExtension.shared
+
+    var body: some View {
+        let sites = engine.controlledSites
+        if !sites.isEmpty {
+            Card {
+                HStack {
+                    SectionTitle(text: "Safari")
+                    Spacer()
+                    SafariLinkBadge(engine: engine)
+                }
+                if let problem = safari.problem(engine) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.warning)
+                        Text(problem)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        if safari.identifier != nil {
+                            Button("Открыть") { safari.openSafariSettings() }
+                                .buttonStyle(PillButtonStyle(color: .blue, filled: false))
+                                .fixedSize()
+                                .help("Открыть Subzero в настройках расширений Safari")
+                        }
+                    }
+                }
+                VStack(spacing: 8) {
+                    ForEach(sites) { site in
+                        HStack(spacing: 8) {
+                            SiteIcon(id: site.id, name: site.name, size: 26)
+                                .saturation(site.state == .frozen ? 0.2 : 1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(site.name).font(.callout.weight(.medium)).lineLimit(1)
+                                    Text(site.domains[0]).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                                }
+                                SiteStateBadge(site: site)
+                            }
+                            Spacer(minLength: 4)
+                            SiteControls(site: site, engine: engine)
+                        }
+                    }
+                }
+            }
+            .onAppear { safari.refresh() }
+        }
     }
 }
 

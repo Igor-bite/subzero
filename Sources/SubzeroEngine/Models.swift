@@ -90,3 +90,61 @@ public enum GuardEvent: Equatable, Sendable {
     /// A DNS leak whose action is "warn" (apps keep running). Sent once per resolver.
     case dnsWarning(DNSLeak)
 }
+
+/// A row in the "Safari" list: a site protected or frozen by hand, with its tabs.
+public struct ControlledSite: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let domains: [String]
+    /// Protection is on for the site.
+    public let isProtected: Bool
+    /// Frozen by the user, independent of the IP.
+    public let isManuallyFrozen: Bool
+    /// Protected, but the user let it run during the current block.
+    public let isOverridden: Bool
+    /// What Subzero currently orders Safari to do with the site.
+    public let mode: SafariMode
+    /// Tabs per the extension's latest fresh report; 0 while it is silent.
+    public let openTabs: Int
+    public let frozenTabs: Int
+    /// Safari lets the extension see the site; `nil` while the extension is silent.
+    public let hasAccess: Bool?
+
+    public init(
+        id: String, name: String, domains: [String], isProtected: Bool, isManuallyFrozen: Bool,
+        isOverridden: Bool, mode: SafariMode, openTabs: Int, frozenTabs: Int, hasAccess: Bool?
+    ) {
+        self.id = id
+        self.name = name
+        self.domains = domains
+        self.isProtected = isProtected
+        self.isManuallyFrozen = isManuallyFrozen
+        self.isOverridden = isOverridden
+        self.mode = mode
+        self.openTabs = openTabs
+        self.frozenTabs = frozenTabs
+        self.hasAccess = hasAccess
+    }
+
+    public var tabCount: Int { openTabs + frozenTabs }
+
+    /// Same states as apps: no tabs, live tabs, frozen tabs.
+    public var state: ControlledApp.State {
+        if tabCount == 0 { return .notRunning }
+        if mode == .freeze || openTabs == 0 { return .frozen }
+        return .running
+    }
+
+    /// Name for lists that mix apps and sites.
+    public var label: String { "\(name) в Safari" }
+}
+
+/// Whether the Safari extension talks to Subzero.
+public enum SafariLink: Equatable, Sendable {
+    /// No report ever: the extension is off or Safari has not run with it.
+    case silent
+    /// Reports arrive.
+    case connected(SafariReport)
+    /// Reports stopped: Safari is closed or the extension was turned off.
+    case lost(since: Date)
+}

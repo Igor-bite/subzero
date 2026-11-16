@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Safari loads only sandboxed extensions. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- The one folder shared with Subzero: state.json (read) and report.json (write). -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/Library/Application Support/Subzero/Safari/</string>
+    </array>
+</dict>
+</plist>

@@ -20,6 +20,7 @@ cask "@TOKEN@" do
 
   zap trash: [
     "~/Library/Application Support/@APP_NAME@",
+    "~/Library/Containers/@BUNDLE_ID@.safari",
     "~/Library/Preferences/@BUNDLE_ID@.plist",
   ]
 end

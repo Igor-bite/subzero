@@ -14,6 +14,8 @@ final class EngineBridge {
 
     func start() {
         engine.onEvent = { [weak self] event in self?.handle(event) }
+        // Shown on frozen Safari tabs.
+        engine.describeBlock = { $0.text }
 
         observe({ [engine] in engine.config.notifications }) { [notifier] enabled in
             notifier.enabled = enabled

@@ -119,3 +119,21 @@ private func rec(_ pid: Int32, _ ppid: Int32, _ path: String?, name: String = "?
     #expect(ProcessScanner.parseProcArgs(bytes) == ["node", "/opt/homebrew/bin/claude"])
     #expect(ProcessScanner.parseProcArgs([1, 0]) == nil)
 }
+
+@Test func safariChannelRoundTripsThroughFiles() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("subzero-safari-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let channel = SafariChannel(directory: dir)
+    #expect(channel.readReport() == nil)
+    #expect(channel.readCommand() == nil)
+
+    let command = SafariCommand(active: true, updatedAt: 1, sites: [
+        .init(id: "claude", name: "Claude", domains: ["claude.ai"], protected: true, mode: .freeze, why: .manual, closeAt: 5),
+    ])
+    try channel.write(command)
+    #expect(channel.readCommand() == command)
+
+    try Data(#"{"at":3,"blocksNetwork":true,"sites":[{"id":"claude","open":1,"frozen":0,"access":true}]}"#.utf8)
+        .write(to: channel.reportURL)
+    #expect(channel.readReport()?.site("claude")?.open == 1)
+}

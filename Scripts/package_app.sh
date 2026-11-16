@@ -14,6 +14,10 @@ SIGNING_MODE=${SIGNING_MODE:-}
 APP_IDENTITY=${APP_IDENTITY:-}
 MARKETING_VERSION=${MARKETING_VERSION:-0.1.0}
 BUILD_NUMBER=${BUILD_NUMBER:-1}
+# 1: embed the Safari extension (Contents/PlugIns/SubzeroSafari.appex).
+SAFARI_EXTENSION=${SAFARI_EXTENSION:-1}
+SAFARI_EXT_NAME=SubzeroSafari
+SAFARI_BUNDLE_ID="${BUNDLE_ID}.safari"
 
 ARCH_LIST=( ${ARCHES:-} )
 if [[ ${#ARCH_LIST[@]} -eq 0 ]]; then
@@ -145,6 +149,81 @@ if [[ -f "$ICON_TARGET" ]]; then
   cp "$ICON_TARGET" "$APP/Contents/Resources/Icon.icns"
 fi
 
+# --- Safari extension ----------------------------------------------------------
+# A Safari web extension is an app extension bundle: a tiny native handler
+# (Safari/Handler, compiled here with swiftc because SwiftPM cannot build .appex)
+# plus the web extension files (Safari/Extension) in its Resources.
+build_safari_extension() {
+  local src="$ROOT/Safari"
+  local appex="$APP/Contents/PlugIns/${SAFARI_EXT_NAME}.appex"
+  local work="$ROOT/.build/safari"
+  rm -rf "$work"
+  mkdir -p "$work" "$appex/Contents/MacOS" "$appex/Contents/Resources/images"
+
+  local sdk
+  sdk=$(xcrun --sdk macosx --show-sdk-path)
+  local slices=()
+  for ARCH in "${ARCH_LIST[@]}"; do
+    xcrun swiftc -O -swift-version 5 -parse-as-library -application-extension \
+      -sdk "$sdk" -target "${ARCH}-apple-macos${MACOS_MIN_VERSION}" \
+      -module-name "$SAFARI_EXT_NAME" \
+      -Xlinker -e -Xlinker _NSExtensionMain -Xlinker -application_extension \
+      "$src/Handler/SafariWebExtensionHandler.swift" \
+      -o "$work/${SAFARI_EXT_NAME}-${ARCH}"
+    slices+=("$work/${SAFARI_EXT_NAME}-${ARCH}")
+  done
+  lipo -create "${slices[@]}" -output "$appex/Contents/MacOS/$SAFARI_EXT_NAME"
+  verify_binary_arches "$appex/Contents/MacOS/$SAFARI_EXT_NAME" "${ARCH_LIST[@]}"
+
+  cat > "$appex/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>${SAFARI_EXT_NAME}</string>
+    <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+    <key>CFBundleIdentifier</key><string>${SAFARI_BUNDLE_ID}</string>
+    <key>CFBundleExecutable</key><string>${SAFARI_EXT_NAME}</string>
+    <key>CFBundlePackageType</key><string>XPC!</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleShortVersionString</key><string>${MARKETING_VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+    <key>CFBundleDevelopmentRegion</key><string>ru</string>
+    <key>LSMinimumSystemVersion</key><string>${MACOS_MIN_VERSION}</string>
+    <key>NSHumanReadableCopyright</key><string>MIT License</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.Safari.web-extension</string>
+        <key>NSExtensionPrincipalClass</key><string>SafariWebExtensionHandler</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+  cp -R "$src/Extension/." "$appex/Contents/Resources/"
+  # The manifest carries the app version (Safari shows it and uses it for updates).
+  sed -i '' -E "s/\"version\": \"[0-9.]+\"/\"version\": \"${MARKETING_VERSION}\"/" "$appex/Contents/Resources/manifest.json"
+  grep -q "\"version\": \"${MARKETING_VERSION}\"" "$appex/Contents/Resources/manifest.json" \
+    || { echo "ERROR: could not set the extension version" >&2; exit 1; }
+
+  # Icons from the app icon.
+  if [[ -f "$ICON_TARGET" ]]; then
+    local master="$work/icon.png"
+    sips -s format png "$ICON_TARGET" --out "$master" >/dev/null
+    local size
+    for size in 48 96 128 256 512; do
+      sips -z "$size" "$size" "$master" --out "$appex/Contents/Resources/images/icon-${size}.png" >/dev/null
+    done
+    for size in 16 32; do
+      sips -z "$size" "$size" "$master" --out "$appex/Contents/Resources/images/toolbar-${size}.png" >/dev/null
+    done
+  fi
+}
+
+if [[ "$SAFARI_EXTENSION" == "1" ]]; then
+  build_safari_extension
+fi
+
 # Ensure contents are writable before stripping attributes and signing.
 chmod -R u+w "$APP"
 
@@ -189,6 +268,14 @@ sign_frameworks() {
   done
 }
 sign_frameworks
+
+# Nested code before the app. The extension must be sandboxed or Safari ignores it.
+SAFARI_APPEX="$APP/Contents/PlugIns/${SAFARI_EXT_NAME}.appex"
+if [[ -d "$SAFARI_APPEX" ]]; then
+  codesign "${CODESIGN_ARGS[@]}" \
+    --entitlements "$ROOT/Safari/${SAFARI_EXT_NAME}.entitlements" \
+    "$SAFARI_APPEX"
+fi
 
 codesign "${CODESIGN_ARGS[@]}" \
   --entitlements "$APP_ENTITLEMENTS" \

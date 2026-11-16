@@ -100,9 +100,11 @@ struct AppsTab: View {
                 } header: {
                     Label { Text("Защищаемые программы") } icon: { IconTile(symbol: "shield.fill", color: .green) }
                 } footer: {
-                    Text("Замораживаются все процессы программы, включая помощники и всё, что она запустила. Браузер замерзает целиком, со всеми вкладками. Кнопки ❄︎ / ▶︎ / ✕ работают сразу, независимо от IP.")
+                    Text("Замораживаются все процессы программы, включая помощники и всё, что она запустила. Браузер замерзает целиком, со всеми вкладками (для Safari — раздел ниже). Кнопки ❄︎ / ▶︎ / ✕ работают сразу, независимо от IP.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                SafariSection(engine: engine)
 
                 let manualOnly = engine.controlledApps.filter { !$0.isProtected }
                 if !manualOnly.isEmpty {
@@ -192,6 +194,92 @@ struct AppsTab: View {
         NSApp.activate()
         guard panel.runModal() == .OK else { return }
         for url in panel.urls { add(AppCatalog.rule(forAppAt: url)) }
+    }
+}
+
+/// Sites protected in Safari through the extension.
+private struct SafariSection: View {
+    let engine: GuardEngine
+    private let safari = SafariExtension.shared
+
+    var body: some View {
+        Section {
+            ForEach(SafariSite.catalog) { site in
+                let controlled = engine.controlledSites.first { $0.id == site.id }
+                let on = engine.config.safariSites.contains(site.id)
+                HStack(spacing: 10) {
+                    Toggle("", isOn: binding(site.id))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .tint(.green)
+                        .help(on ? "Защищается" : "Защита выключена")
+                    SiteIcon(id: site.id, name: site.name)
+                        .saturation(on ? 1 : 0)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(site.name)
+                            Text(site.domains.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        if let controlled {
+                            SiteStateBadge(site: controlled)
+                        } else {
+                            Text("Не защищается").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if let controlled {
+                        SiteControls(site: controlled, engine: engine)
+                    }
+                }
+                .opacity(on || controlled != nil ? 1 : 0.65)
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                StatusDot(color: statusColor)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text("Расширение Subzero")
+                        SafariLinkBadge(engine: engine)
+                    }
+                    Text(safari.problem(engine) ?? "Работает: вкладки этих сайтов подчиняются Subzero.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if safari.identifier != nil {
+                    Button("Настройки Safari…") { safari.openSafariSettings() }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .onAppear { safari.refresh() }
+        } header: {
+            Label { Text("Safari") } icon: { IconTile(symbol: "safari.fill", color: .blue) }
+        } footer: {
+            Text("Safari нельзя заморозить сигналом, поэтому вкладки этих сайтов замораживает расширение. При чужом IP сеть к сайту отрезается, а вкладки выгружаются и сами открываются снова, когда IP в порядке. Если разрешённый IP не вернулся вовремя, вкладки закрываются. Пока IP только перепроверяется (смена сети, пробуждение), сеть отрезана, но вкладки остаются. Если Subzero упал или завис, расширение само отрезает сайты от сети. Включите расширение в Safari → Настройки → Расширения и разрешите ему эти сайты.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var statusColor: Color {
+        if safari.problem(engine) != nil { return Palette.warning }
+        if case .connected = engine.safariLink { return Palette.running }
+        return .gray
+    }
+
+    private func binding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { engine.config.safariSites.contains(id) },
+            set: { on in
+                if on {
+                    if !engine.config.safariSites.contains(id) { engine.config.safariSites.append(id) }
+                } else {
+                    engine.config.safariSites.removeAll { $0 == id }
+                }
+            }
+        )
     }
 }
 

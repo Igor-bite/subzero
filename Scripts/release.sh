@@ -108,6 +108,8 @@ fi
 
 log "Running tests"
 swift test
+command -v node >/dev/null || die "node is required for the Safari extension tests"
+node --test "$ROOT"/Safari/Tests/*.test.cjs
 
 log "Building ${APP_NAME} ${VERSION} (${BUILD_NUMBER}) for: ${ARCHES}"
 ARCHES="$ARCHES" \

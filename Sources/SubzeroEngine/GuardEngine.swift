@@ -8,7 +8,9 @@ import SubzeroSystem
 ///
 /// Enforcement is declarative: every tick computes the set of processes that
 /// should be stopped (auto-protected while blocked, plus manual freezes) and
-/// sends SIGSTOP/SIGCONT only for the difference.
+/// sends SIGSTOP/SIGCONT only for the difference. Safari sites get the same
+/// treatment through the Safari extension: every tick publishes a `SafariCommand`
+/// (with a heartbeat, so the extension freezes on its own if Subzero dies).
 ///
 /// The engine has no UI and no user-facing text. Hosts observe its state
 /// (`@Observable`) and react to `onEvent` (notifications, sounds, logs).
@@ -61,6 +63,14 @@ public final class GuardEngine {
     public private(set) var lastError: String?
     /// Last freeze/kill/release.
     public private(set) var lastHit: EnforcementHit?
+    /// Safari sites frozen by hand (ids from `SafariSite.catalog`). Persisted.
+    public private(set) var manualSiteFreezes: [String] = []
+    /// Protected Safari sites the user unfroze during the current block.
+    public private(set) var siteOverrides: Set<String> = []
+    /// Latest report of the Safari extension, fresh or not.
+    public private(set) var safariReport: SafariReport?
+    /// Last failure to write the Safari command, if any.
+    public private(set) var safariError: String?
     /// Updated every tick so countdowns refresh.
     public private(set) var now = Date()
 
@@ -68,11 +78,28 @@ public final class GuardEngine {
     @ObservationIgnored
     public var onEvent: (@MainActor (GuardEvent) -> Void)?
 
+    /// Text for a block reason, shown on frozen Safari tabs. Set by the host
+    /// (the engine has no user-facing text); without it tabs show a generic text.
+    @ObservationIgnored
+    public var describeBlock: (@MainActor (BlockReason) -> String)?
+
+    /// How often the Safari command is rewritten even when nothing changed.
+    /// The extension treats a command older than 15 s as "Subzero is gone".
+    public static let safariHeartbeat: TimeInterval = 3
+    /// A report older than this means the extension is silent (it reports every ≤ 5 s).
+    public static let safariReportFreshness: TimeInterval = 12
+
     // MARK: Private state
 
     @ObservationIgnored private let store: ConfigStore
     @ObservationIgnored private let defaults: UserDefaults?
     private static let manualKey = "manualFreezes"
+    private static let manualSitesKey = "manualSiteFreezes"
+    @ObservationIgnored private let safari: (any SafariLinking)?
+    @ObservationIgnored private var lastSafariCommand: SafariCommand?
+    @ObservationIgnored private var lastSafariPublish = Date.distantPast
+    /// Last "close all tabs" order per site, seconds since 1970.
+    @ObservationIgnored private var siteCloseAt: [String: Double] = [:]
     @ObservationIgnored private let probe: any NetworkProbing
     @ObservationIgnored private let processes: any ProcessControlling
     @ObservationIgnored private let observesSystem: Bool
@@ -96,22 +123,28 @@ public final class GuardEngine {
     ///   - defaults: where manual freezes are kept across restarts; `nil` keeps them in memory only.
     ///   - probe: source of network observations.
     ///   - processes: process listing and signals.
+    ///   - safari: link to the Safari extension; `nil` leaves Safari alone.
     ///   - observesSystem: react to network changes and sleep/wake. Turn off in tests.
     public init(
         store: ConfigStore = .standard,
         defaults: UserDefaults? = .standard,
         probe: any NetworkProbing = IPProbe(),
         processes: any ProcessControlling = SystemProcessController(),
+        safari: (any SafariLinking)? = SafariChannel(),
         observesSystem: Bool = true
     ) {
         self.store = store
         self.defaults = defaults
         self.probe = probe
         self.processes = processes
+        self.safari = safari
         self.observesSystem = observesSystem
         self.config = store.load()
         if let data = defaults?.data(forKey: Self.manualKey), let saved = try? JSONDecoder().decode([ManualFreeze].self, from: data) {
             manualFreezes = saved
+        }
+        if let saved = defaults?.stringArray(forKey: Self.manualSitesKey) {
+            manualSiteFreezes = saved.filter { SafariSite.site(id: $0) != nil }
         }
     }
 
@@ -162,6 +195,8 @@ public final class GuardEngine {
         processes.send(SIGCONT, to: Set(targets).union(frozenPIDs))
         frozenPIDs.removeAll()
         frozenRuleIDs.removeAll()
+        // Normal quit: Safari releases every tab (a crash leaves the heartbeat to go stale).
+        try? safari?.publish(makeSafariCommand(active: false))
     }
 
     // MARK: Derived state
@@ -182,9 +217,19 @@ public final class GuardEngine {
         config.apps.filter { frozenRuleIDs.contains($0.id) }.map(\.name)
     }
 
-    /// How many apps stand frozen right now (any reason).
+    /// Safari sites with tabs frozen because of the IP ("Claude в Safari").
+    public var frozenSiteNames: [String] {
+        controlledSites.filter { $0.mode == .freeze && !$0.isManuallyFrozen && $0.tabCount > 0 }.map(\.label)
+    }
+
+    /// Something stands frozen because of the IP: apps or Safari tabs.
+    public var hasFrozenTargets: Bool {
+        !frozenRuleIDs.isEmpty || !frozenSiteNames.isEmpty
+    }
+
+    /// How many apps and Safari sites stand frozen right now (any reason).
     public var frozenAppCount: Int {
-        appStates.values.filter { $0 == .frozen }.count
+        appStates.values.filter { $0 == .frozen }.count + controlledSites.filter { $0.state == .frozen }.count
     }
 
     /// DNS leak with the action the settings assign to it (default or per-country rule).
@@ -231,6 +276,49 @@ public final class GuardEngine {
             ))
         }
         return result
+    }
+
+    // MARK: Safari
+
+    /// Report of the Safari extension if it is recent enough to trust.
+    private var freshSafariReport: SafariReport? {
+        guard let report = safariReport, now.timeIntervalSince1970 - report.at < Self.safariReportFreshness else { return nil }
+        return report
+    }
+
+    public var safariLink: SafariLink {
+        guard let report = safariReport else { return .silent }
+        if let fresh = freshSafariReport { return .connected(fresh) }
+        return .lost(since: Date(timeIntervalSince1970: report.at))
+    }
+
+    /// Protected sites plus sites frozen by hand, in catalog order.
+    public var controlledSites: [ControlledSite] {
+        let report = freshSafariReport
+        return SafariSite.catalog.compactMap { site in
+            let protected = config.safariSites.contains(site.id)
+            let manual = manualSiteFreezes.contains(site.id)
+            guard protected || manual else { return nil }
+            let tabs = report?.site(site.id)
+            return ControlledSite(
+                id: site.id, name: site.name, domains: site.domains,
+                isProtected: protected, isManuallyFrozen: manual,
+                isOverridden: siteOverrides.contains(site.id),
+                mode: siteOrder(site.id).mode,
+                openTabs: tabs?.open ?? 0, frozenTabs: tabs?.frozen ?? 0,
+                hasAccess: report.map { _ in tabs?.access ?? false }
+            )
+        }
+    }
+
+    /// Hand freezes unload tabs. A confirmed block unloads them too; while the IP is
+    /// only being re-checked the network is cut but tabs stay (no reload on every
+    /// network change).
+    private func siteOrder(_ id: String) -> (mode: SafariMode, why: SafariWhy?) {
+        if manualSiteFreezes.contains(id) { return (.freeze, .manual) }
+        guard config.safariSites.contains(id), !siteOverrides.contains(id), shouldBlock else { return (.run, nil) }
+        if case .blocked = phase { return (.freeze, .network) }
+        return (.hold, .network)
     }
 
     private var shouldBlock: Bool {
@@ -324,6 +412,37 @@ public final class GuardEngine {
         lastHit = EnforcementHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .shatter)
     }
 
+    // MARK: User actions: Safari
+
+    /// Freeze the site's tabs now and keep them frozen until unfrozen by hand, whatever the IP.
+    public func freezeSite(_ id: String) {
+        guard SafariSite.site(id: id) != nil else { return }
+        siteOverrides.remove(id)
+        if !manualSiteFreezes.contains(id) {
+            manualSiteFreezes.append(id)
+            saveManualSiteFreezes()
+        }
+        syncSafari(force: true)
+    }
+
+    /// Unfreeze now. A protected site unfrozen during a block runs until the block ends.
+    public func unfreezeSite(_ site: ControlledSite) {
+        manualSiteFreezes.removeAll { $0 == site.id }
+        saveManualSiteFreezes()
+        if site.isProtected && shouldBlock {
+            siteOverrides.insert(site.id)
+        }
+        syncSafari(force: true)
+    }
+
+    /// Close every Safari tab of the site right now.
+    public func closeSite(_ site: ControlledSite) {
+        manualSiteFreezes.removeAll { $0 == site.id }
+        saveManualSiteFreezes()
+        siteCloseAt[site.id] = Date().timeIntervalSince1970
+        syncSafari(force: true)
+    }
+
     // MARK: Check loop
 
     private func runLoop() async {
@@ -399,6 +518,7 @@ public final class GuardEngine {
         }
         let enabledIDs = Set(enabledRules.map(\.id))
         overrides.formIntersection(enabledIDs)
+        siteOverrides.formIntersection(config.safariSites)
         guard started else { return }
         if old.checkIPv6 != config.checkIPv6 || old.checkInterval != config.checkInterval
             || old.minAgree != config.minAgree || old.policySettings.needsDNS != config.policySettings.needsDNS {
@@ -415,6 +535,10 @@ public final class GuardEngine {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func saveManualSiteFreezes() {
+        defaults?.set(manualSiteFreezes, forKey: Self.manualSitesKey)
     }
 
     private func saveManualFreezes() {
@@ -467,8 +591,10 @@ public final class GuardEngine {
         let deadline = blocked ? enforcer.deadline(grace: grace) : nil
         if killDeadline != deadline { killDeadline = deadline }
         if action == .resume, !overrides.isEmpty { overrides.removeAll() }
+        if action == .resume, !siteOverrides.isEmpty { siteOverrides.removeAll() }
 
         reconcile(action: action, force: false)
+        syncSafari(force: action != .none)
 
         if action == .resume, announcedBlock {
             announcedBlock = false
@@ -495,6 +621,7 @@ public final class GuardEngine {
         if action == .kill {
             // Kill what is frozen because of the IP; hand-frozen apps stay frozen.
             let victims = targets.filter { autoIDs.contains($0.value) && !manualIDs.contains($0.value) }
+            var killedNames: [String] = []
             if !victims.isEmpty {
                 processes.send(SIGKILL, to: Set(victims.keys))
                 frozenPIDs.subtract(victims.keys)
@@ -502,7 +629,11 @@ public final class GuardEngine {
                 let ids = Set(victims.values)
                 let killed = config.apps.filter { ids.contains($0.id) }
                 lastHit = EnforcementHit(names: killed.map(\.name), kinds: killed.map(\.kind), at: Date(), kind: .shatter)
-                emit(.killed(apps: killed.map(\.name), cause: killsImmediately ? .dnsLeak : .graceExpired))
+                killedNames = killed.map(\.name)
+            }
+            killedNames += closeBlockedSites()
+            if !killedNames.isEmpty {
+                emit(.killed(apps: killedNames, cause: killsImmediately ? .dnsLeak : .graceExpired))
             }
         }
 
@@ -565,9 +696,60 @@ public final class GuardEngine {
     /// Report once per block episode, and only for real verdicts (not the
     /// sub-second freeze while re-checking after a network change).
     private func announceIfNeeded() {
-        guard !announcedBlock, case .blocked(let reason) = phase, !frozenRuleIDs.isEmpty else { return }
+        guard !announcedBlock, case .blocked(let reason) = phase, hasFrozenTargets else { return }
         announcedBlock = true
-        emit(.blocked(reason, apps: frozenAppNames))
+        emit(.blocked(reason, apps: frozenAppNames + frozenSiteNames))
+    }
+
+    // MARK: Safari link
+
+    /// Orders Safari to close the tabs of sites frozen because of the IP.
+    /// Returns the labels of sites that had tabs.
+    private func closeBlockedSites() -> [String] {
+        let stamp = Date().timeIntervalSince1970
+        var closed: [String] = []
+        for site in controlledSites where site.isProtected && !site.isManuallyFrozen && site.mode != .run {
+            siteCloseAt[site.id] = stamp
+            if site.tabCount > 0 { closed.append(site.label) }
+        }
+        return closed
+    }
+
+    private func makeSafariCommand(active: Bool) -> SafariCommand {
+        var detail: String?
+        if active, case .blocked(let reason) = phase { detail = describeBlock?(reason) }
+        let sites = SafariSite.catalog.map { site in
+            let order = active ? siteOrder(site.id) : (mode: SafariMode.run, why: nil)
+            return SafariCommand.Site(
+                id: site.id, name: site.name, domains: site.domains,
+                protected: config.safariSites.contains(site.id),
+                mode: order.mode, why: order.why,
+                closeAt: siteCloseAt[site.id] ?? 0
+            )
+        }
+        return SafariCommand(active: active, updatedAt: Date().timeIntervalSince1970, detail: detail, sites: sites)
+    }
+
+    /// Reads the extension's report and publishes current orders: right away when they
+    /// changed (or `force`), otherwise as a heartbeat.
+    private func syncSafari(force: Bool = false) {
+        guard started, let safari else { return }
+        let report = safari.latestReport()
+        if report != safariReport { safariReport = report }
+
+        let command = makeSafariCommand(active: true)
+        if !force, let last = lastSafariCommand, last.sameOrders(as: command),
+           Date().timeIntervalSince(lastSafariPublish) < Self.safariHeartbeat {
+            return
+        }
+        do {
+            try safari.publish(command)
+            lastSafariCommand = command
+            lastSafariPublish = Date()
+            if safariError != nil { safariError = nil }
+        } catch {
+            safariError = error.localizedDescription
+        }
     }
 
     #if DEBUG
@@ -583,9 +765,15 @@ public final class GuardEngine {
         killDeadline: Date? = nil,
         lastHit: EnforcementHit? = nil,
         appProcesses: [UUID: [ProcessRecord]] = [:],
-        expandedApps: Set<UUID> = []
+        expandedApps: Set<UUID> = [],
+        manualSiteFreezes: [String] = [],
+        siteOverrides: Set<String> = [],
+        safariReport: SafariReport? = nil
     ) {
         self.lastHit = lastHit
+        self.manualSiteFreezes = manualSiteFreezes
+        self.siteOverrides = siteOverrides
+        self.safariReport = safariReport
         self.snapshot = snapshot
         self.verdict = verdict
         self.lastCheck = Date()

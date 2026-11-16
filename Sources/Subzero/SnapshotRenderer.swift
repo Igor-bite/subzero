@@ -51,6 +51,13 @@ enum SnapshotRenderer {
         ]
     }
 
+    private static func safari(claude: (open: Int, frozen: Int), chatgpt: (open: Int, frozen: Int), access: Bool = true) -> SafariReport {
+        SafariReport(at: Date().timeIntervalSince1970, extensionVersion: "1.0", blocksNetwork: true, sites: [
+            .init(id: "claude", open: claude.open, frozen: claude.frozen, access: true),
+            .init(id: "chatgpt", open: chatgpt.open, frozen: chatgpt.frozen, access: access),
+        ])
+    }
+
     private static func render(to dir: URL) {
         let nl = IPAddress("185.10.10.10")!
         let ru = IPAddress("95.165.10.20")!
@@ -66,7 +73,8 @@ enum SnapshotRenderer {
                 snapshot: NetworkSnapshot(ipv4: .agreed(nl, votes: 4), ipv6: .none, countries: [nl: "NL", resolverRU: "RU"], dnsResolver: resolverRU),
                 verdict: .allowed(nl),
                 appStates: [cursor: .running, chrome: .running, claude: .notRunning, telegram.id: .frozen],
-                manualFreezes: [telegram]
+                manualFreezes: [telegram],
+                safariReport: safari(claude: (2, 0), chatgpt: (0, 0), access: false)
             )
             scenarios.append(("menu-protected", engine))
         }
@@ -88,7 +96,9 @@ enum SnapshotRenderer {
                         ProcessRecord(pid: 4188, ppid: 4120, name: "rg", path: "/opt/homebrew/bin/rg", isStopped: true),
                     ],
                 ],
-                expandedApps: [cursor]
+                expandedApps: [cursor],
+                manualSiteFreezes: ["chatgpt"],
+                safariReport: safari(claude: (0, 3), chatgpt: (0, 1))
             )
             scenarios.append(("menu-blocked", engine))
         }
@@ -178,10 +188,11 @@ enum SnapshotRenderer {
             appStates: [cursor: .frozen, chrome: .running, claude: .notRunning],
             manualFreezes: [ManualFreeze(id: UUID(), name: "Cursor", kind: .bundle(path: "/Applications/Cursor.app")), telegram],
             appProcesses: [cursor: cursorProcesses(stopped: true)],
-            expandedApps: [cursor]
+            expandedApps: [cursor],
+            safariReport: safari(claude: (1, 0), chatgpt: (0, 0))
         )
         for (suffix, appearance) in appearances {
-            save(AppsTab(engine: engine), width: 600, height: 540, appearance: appearance, to: dir.appendingPathComponent("settings-apps-\(suffix).png"))
+            save(AppsTab(engine: engine), width: 600, height: 1100, appearance: appearance, to: dir.appendingPathComponent("settings-apps-\(suffix).png"))
             save(AllowTab(engine: engine), width: 600, height: 540, appearance: appearance, to: dir.appendingPathComponent("settings-allow-\(suffix).png"))
             engine.config.dnsCountryRules = [DNSCountryRule(country: "RU", action: .kill), DNSCountryRule(country: "US", action: .off)]
             save(BehaviorTab(engine: engine), width: 600, height: 900, appearance: appearance, to: dir.appendingPathComponent("settings-behavior-\(suffix).png"))

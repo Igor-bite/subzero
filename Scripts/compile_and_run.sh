@@ -35,6 +35,12 @@ pkill -x "${APP_NAME}" 2>/dev/null || true
 if [[ "${RUN_TESTS}" == "1" ]]; then
   log "==> swift test"
   swift test -q
+  if command -v node >/dev/null 2>&1; then
+    log "==> node --test (Safari extension)"
+    node --test "${ROOT_DIR}"/Safari/Tests/*.test.cjs
+  else
+    log "WARN: node not found, Safari extension tests skipped."
+  fi
 fi
 
 HOST_ARCH="$(uname -m)"
@@ -43,8 +49,20 @@ if [[ -n "${RELEASE_ARCHES}" ]]; then
   ARCHES_VALUE="${RELEASE_ARCHES}"
 fi
 
+# Ad-hoc by default. Safari shows an ad-hoc extension only with Develop →
+# "Allow Unsigned Extensions"; set APP_IDENTITY="Developer ID Application: …"
+# to sign the local build so Safari lists it like a release.
+SIGNING="adhoc"
+if [[ -n "${APP_IDENTITY:-}" ]]; then SIGNING=""; fi
+
 log "==> package app"
-SIGNING_MODE=adhoc ARCHES="${ARCHES_VALUE}" "${ROOT_DIR}/Scripts/package_app.sh" release
+SIGNING_MODE="${SIGNING}" ARCHES="${ARCHES_VALUE}" "${ROOT_DIR}/Scripts/package_app.sh" release
+
+# Let Safari see the extension of this build (Safari → Settings → Extensions).
+SAFARI_APPEX="${APP_BUNDLE}/Contents/PlugIns/SubzeroSafari.appex"
+if [[ -d "${SAFARI_APPEX}" ]]; then
+  pluginkit -a "${SAFARI_APPEX}" 2>/dev/null || true
+fi
 
 log "==> launch app"
 if ! open "${APP_BUNDLE}"; then

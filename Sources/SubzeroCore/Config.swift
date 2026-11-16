@@ -28,6 +28,8 @@ public struct GuardConfig: Codable, Equatable, Sendable {
     public var allowedNetworks: [String] = []
     /// What to protect.
     public var apps: [AppRule] = []
+    /// Ids of `SafariSite.catalog` sites protected in Safari (through the extension).
+    public var safariSites: [String] = SafariSite.catalog.map(\.id)
 
     /// Seconds between checks while everything is fine.
     public var checkInterval: TimeInterval = 30
@@ -69,6 +71,7 @@ extension GuardConfig {
         allowedCountries = try c.decodeIfPresent([String].self, forKey: .allowedCountries) ?? d.allowedCountries
         allowedNetworks = try c.decodeIfPresent([String].self, forKey: .allowedNetworks) ?? d.allowedNetworks
         apps = try c.decodeIfPresent([AppRule].self, forKey: .apps) ?? d.apps
+        safariSites = (try? c.decodeIfPresent([String].self, forKey: .safariSites)) ?? d.safariSites
         checkInterval = try c.decodeIfPresent(TimeInterval.self, forKey: .checkInterval) ?? d.checkInterval
         killAfterGrace = try c.decodeIfPresent(Bool.self, forKey: .killAfterGrace) ?? d.killAfterGrace
         grace = try c.decodeIfPresent(TimeInterval.self, forKey: .grace) ?? d.grace

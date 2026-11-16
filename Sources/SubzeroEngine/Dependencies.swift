@@ -30,3 +30,20 @@ public struct SystemProcessController: ProcessControlling {
         ProcessSignaler.send(signal, to: pids)
     }
 }
+
+/// Link to the Safari extension: publishes orders, returns what it last reported.
+/// `SafariChannel` is the real one.
+public protocol SafariLinking: Sendable {
+    func publish(_ command: SafariCommand) throws
+    func latestReport() -> SafariReport?
+}
+
+extension SafariChannel: SafariLinking {
+    public func publish(_ command: SafariCommand) throws {
+        try write(command)
+    }
+
+    public func latestReport() -> SafariReport? {
+        readReport()
+    }
+}

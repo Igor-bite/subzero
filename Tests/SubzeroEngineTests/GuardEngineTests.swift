@@ -53,7 +53,7 @@ private func makeEngine(_ snap: NetworkSnapshot, processes: FakeProcesses) -> Gu
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("subzero-test-\(UUID()).json")
     let engine = GuardEngine(
         store: ConfigStore(url: url), defaults: nil,
-        probe: FakeProbe(result: snap), processes: processes, observesSystem: false
+        probe: FakeProbe(result: snap), processes: processes, safari: nil, observesSystem: false
     )
     var config = GuardConfig()
     config.allowedCountries = ["NL"]

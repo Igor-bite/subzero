@@ -1,0 +1,53 @@
+{
+  "manifest_version": 2,
+  "name": "Subzero",
+  "short_name": "Subzero",
+  "version": "0.0.0",
+  "description": "Замораживает вкладки Claude и ChatGPT, когда Subzero видит чужой IP, и закрывает их, если разрешённый IP не вернулся.",
+  "icons": {
+    "48": "images/icon-48.png",
+    "96": "images/icon-96.png",
+    "128": "images/icon-128.png",
+    "256": "images/icon-256.png",
+    "512": "images/icon-512.png"
+  },
+  "background": {
+    "scripts": ["logic.js", "background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://claude.ai/*",
+        "*://*.claude.ai/*",
+        "*://chatgpt.com/*",
+        "*://*.chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://*.chat.openai.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_action": {
+    "default_title": "Subzero",
+    "default_icon": {
+      "16": "images/toolbar-16.png",
+      "32": "images/toolbar-32.png"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "webNavigation",
+    "storage",
+    "alarms",
+    "declarativeNetRequest",
+    "*://claude.ai/*",
+    "*://*.claude.ai/*",
+    "*://chatgpt.com/*",
+    "*://*.chatgpt.com/*",
+    "*://chat.openai.com/*",
+    "*://*.chat.openai.com/*"
+  ]
+}

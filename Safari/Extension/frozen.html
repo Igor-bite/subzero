@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>❄ Заморожено — Subzero</title>
+  <style>
+    :root {
+      --night: #070b18;
+      --panel: #121a30;
+      --panel-high: #1b2644;
+      --ice: #5fd0ff;
+      --frost: #d9f4ff;
+      --gold: #ffcc4d;
+      --blood: #ff3b5c;
+      --caution: #ffb020;
+      --text: #e8f1ff;
+      --muted: #8ea3c4;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      background: radial-gradient(ellipse at top, #13284a 0%, var(--night) 60%);
+      color: var(--text);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+    .card {
+      width: min(560px, 100%);
+      padding: 28px 28px 24px;
+      background: linear-gradient(var(--panel-high), var(--panel));
+      border: 2px solid var(--ice);
+      box-shadow: 0 0 0 3px var(--night), 0 0 40px rgba(95, 208, 255, 0.25);
+      clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
+    }
+    .flake { font-size: 52px; line-height: 1; filter: drop-shadow(0 0 12px rgba(95, 208, 255, 0.8)); }
+    .banner {
+      margin: 10px 0 4px;
+      font: 900 30px/1.1 "SF Mono", Menlo, monospace;
+      letter-spacing: 2px;
+      color: var(--frost);
+      text-shadow: 2px 2px 0 #0a3d66, 0 0 18px rgba(95, 208, 255, 0.6);
+      text-transform: uppercase;
+    }
+    .banner.hold { color: #ffe9b8; text-shadow: 2px 2px 0 #5a3b00, 0 0 18px rgba(255, 176, 32, 0.5); }
+    h1 { margin: 0 0 12px; font-size: 20px; font-weight: 700; }
+    p { margin: 0 0 10px; }
+    .why { color: var(--frost); }
+    .detail { color: var(--caution); font-weight: 600; }
+    .detail:empty { display: none; }
+    .url {
+      margin-top: 16px;
+      padding: 8px 10px;
+      background: rgba(7, 11, 24, 0.6);
+      color: var(--muted);
+      font: 12px/1.4 "SF Mono", Menlo, monospace;
+      word-break: break-all;
+    }
+    .note { margin-top: 14px; color: var(--muted); font-size: 13px; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      margin-bottom: 6px;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      font: 800 11px/1.6 "SF Mono", Menlo, monospace;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="flake">❄</div>
+    <div class="banner" id="banner">Frozen!</div>
+    <span class="tag">Subzero</span>
+    <h1 id="title">Вкладка заморожена</h1>
+    <p class="why" id="why">Subzero не пускает этот сайт в сеть.</p>
+    <p class="detail" id="detail"></p>
+    <div class="url" id="url"></div>
+    <p class="note" id="note">Страница откроется сама, когда Subzero подтвердит разрешённый IP. Набранный на ней текст мог не сохраниться.</p>
+  </main>
+  <script src="frozen.js"></script>
+</body>
+</html>

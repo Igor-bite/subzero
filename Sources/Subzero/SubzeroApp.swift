@@ -149,8 +149,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: engine.statusSummary, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
-        if !engine.frozenAppNames.isEmpty {
-            let frozen = NSMenuItem(title: "❄︎ \(engine.frozenAppNames.joined(separator: ", "))", action: nil, keyEquivalent: "")
+        let frozenNames = engine.frozenAppNames + engine.frozenSiteNames
+        if !frozenNames.isEmpty {
+            let frozen = NSMenuItem(title: "❄︎ \(frozenNames.joined(separator: ", "))", action: nil, keyEquivalent: "")
             frozen.isEnabled = false
             menu.addItem(frozen)
         }

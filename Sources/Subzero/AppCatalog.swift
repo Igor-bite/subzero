@@ -51,7 +51,7 @@ enum AppCatalog {
         switch rule.kind {
         case .bundle(let path):
             if path.hasPrefix("/System/") { return "Системные программы защищать нельзя." }
-            if path.hasSuffix("/Safari.app") { return "Safari защитить нельзя: его вкладки живут в общих системных процессах." }
+            if path.hasSuffix("/Safari.app") { return "Safari целиком заморозить нельзя: его вкладки живут в общих системных процессах. Claude и ChatGPT в Safari защищает расширение Subzero — раздел «Safari» ниже." }
             if path == Bundle.main.bundlePath { return "Subzero не может замораживать сам себя." }
         case .patterns(let patterns):
             let cleaned = patterns.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }

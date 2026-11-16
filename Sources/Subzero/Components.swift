@@ -295,7 +295,7 @@ extension GuardEngine {
         switch phase {
         case .checking: return "Проверяю IP…"
         case .protected: return "Защищено\(place)"
-        case .blocked: return (frozenRuleIDs.isEmpty ? "IP не разрешён" : "Заморожено") + place
+        case .blocked: return (hasFrozenTargets ? "Заморожено" : "IP не разрешён") + place
         case .paused(let until):
             return until == .distantFuture
                 ? "Пауза без срока"
