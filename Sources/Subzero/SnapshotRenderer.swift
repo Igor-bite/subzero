@@ -24,7 +24,7 @@ enum SnapshotRenderer {
 
     private static func makeEngine() -> (GuardEngine, cursor: UUID, chrome: UUID, claude: UUID) {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("subzero-snapshot-\(UUID()).json")
-        let engine = GuardEngine(store: ConfigStore(url: tmp), defaults: nil)
+        let engine = GuardEngine(store: ConfigStore(url: tmp), defaults: nil, safari: nil, journal: nil)
         var config = GuardConfig()
         config.allowedCountries = ["NL", "DE"]
         config.allowedNetworks = ["185.10.10.10", "10.0.0.0/8"]
@@ -198,12 +198,86 @@ enum SnapshotRenderer {
             save(BehaviorTab(engine: engine), width: 600, height: 900, appearance: appearance, to: dir.appendingPathComponent("settings-behavior-\(suffix).png"))
             save(SettingsView(engine: engine), width: 600, height: 620, appearance: appearance, to: dir.appendingPathComponent("settings-window-\(suffix).png"))
         }
+        // Journal and stats over a made-up week.
+        let today = Calendar.current.startOfDay(for: Date())
+        let journalNow = today.addingTimeInterval(18.5 * 3600)
+        engine.journal.debugReplace(sampleJournal(today: today, now: journalNow))
+        for (suffix, appearance) in appearances {
+            save(JournalTab(engine: engine), width: 600, height: 560, appearance: appearance, to: dir.appendingPathComponent("settings-journal-\(suffix).png"))
+            save(StatsTab(engine: engine, fixedNow: journalNow), width: 600, height: 1500, appearance: appearance, to: dir.appendingPathComponent("settings-stats-\(suffix).png"))
+        }
+        save(StatsTab(engine: engine, fixedNow: journalNow, period: .day), width: 600, height: 900, appearance: appearances[1].1, to: dir.appendingPathComponent("settings-stats-day-dark.png"))
+        engine.journal.debugReplace([])
+        save(JournalTab(engine: engine), width: 600, height: 400, appearance: appearances[1].1, to: dir.appendingPathComponent("settings-journal-empty-dark.png"))
+        save(StatsTab(engine: engine, fixedNow: journalNow), width: 600, height: 400, appearance: appearances[1].1, to: dir.appendingPathComponent("settings-stats-empty-dark.png"))
+
         // Only IP addresses allowed, no countries: no "nothing allowed" warning.
         let countries = engine.config.allowedCountries
         engine.config.allowedCountries = []
         save(AllowTab(engine: engine), width: 600, height: 540, appearance: appearances[1].1, to: dir.appendingPathComponent("settings-allow-ipsonly-dark.png"))
         engine.config.allowedCountries = countries
         print("Snapshots written to \(dir.path)")
+    }
+
+    /// A week of plausible history: daily runs, blocks with freezes, a kill, a DNS warning, a pause, sleep.
+    private static func sampleJournal(today: Date, now: Date) -> [JournalEntry] {
+        var entries: [JournalEntry] = []
+        func add(_ at: Date, _ event: JournalEvent) {
+            guard at <= now else { return }
+            entries.append(JournalEntry(at: at, event: event))
+        }
+        let nl = JournalEvent.ipChanged(ip: "185.10.10.10", country: "NL")
+        let de = JournalEvent.ipChanged(ip: "91.200.12.7", country: "DE")
+        let ru = JournalEvent.ipChanged(ip: "95.165.10.20", country: "RU")
+        let ruBlock = JournalBlock(kind: .notAllowed, ip: "95.165.10.20", country: "RU")
+        let protected = ["Claude Code (CLI)", "Claude в Safari", "Cursor"]
+        let calendar = Calendar.current
+        for back in (0..<7).reversed() {
+            let day = calendar.date(byAdding: .day, value: -back, to: today)!
+            func t(_ hours: Double) -> Date { day.addingTimeInterval(hours * 3600) }
+            let open = 8.5 + Double(back % 3) * 0.5
+            add(t(open), .started)
+            add(t(open), .status(.checking))
+            add(t(open) + 2, back % 4 == 1 ? de : nl)
+            add(t(open) + 2, .status(.protected))
+
+            // VPN drops in the afternoon on most days.
+            if back != 1 {
+                let drop = 13.0 + Double(back % 4) * 0.75
+                let minutes = Double(3 + (back * 7) % 19)
+                add(t(drop), .status(.checking))
+                add(t(drop) + 2, ru)
+                add(t(drop) + 2, .status(.blocked, block: ruBlock))
+                add(t(drop) + 3, .frozen(targets: protected, manual: false))
+                if back == 4 {
+                    add(t(drop) + 300, .killed(targets: ["Claude Code (CLI)", "Claude в Safari", "Cursor"], cause: .graceExpired))
+                    add(t(drop) + 420, nl)
+                    add(t(drop) + 420, .status(.protected))
+                } else {
+                    let end = t(drop) + minutes * 60
+                    if back == 2 { add(t(drop) + 120, .status(.blocked, block: JournalBlock(kind: .offline))) }
+                    add(end, back % 4 == 1 ? de : nl)
+                    add(end, .status(.protected))
+                    add(end, .thawed(targets: protected, manual: false))
+                }
+            }
+            if back == 3 { add(t(11), .dnsWarning(resolver: "77.88.8.8", country: "RU")) }
+            if back == 1 {
+                add(t(10), .frozen(targets: ["Telegram"], manual: true))
+                add(t(10.7), .thawed(targets: ["Telegram"], manual: true))
+                add(t(15), .status(.paused, until: t(15.5)))
+                add(t(15.5), .status(.checking))
+                add(t(15.5) + 2, .status(.protected))
+            }
+            add(t(12), .status(.asleep))
+            add(t(12.75), .status(.checking))
+            add(t(12.75) + 3, .status(.protected))
+            if back > 0 {
+                add(t(19.5), .status(.asleep))
+                add(t(23), .stopped(clean: back != 5))
+            }
+        }
+        return entries.sorted { $0.at < $1.at }
     }
 
     private static func save(_ view: some View, width: CGFloat, height: CGFloat?, appearance: NSAppearance, to url: URL) {

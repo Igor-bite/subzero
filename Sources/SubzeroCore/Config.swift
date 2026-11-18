@@ -47,6 +47,8 @@ public struct GuardConfig: Codable, Equatable, Sendable {
     public var dnsCountryRules: [DNSCountryRule] = []
     public var notifications: Bool = true
     public var menuBarText: MenuBarText = .country
+    /// How many days the journal keeps.
+    public var journalDays: Int = 30
 
     public init() {}
 
@@ -83,6 +85,7 @@ extension GuardConfig {
         dnsCountryRules = (try? c.decodeIfPresent([DNSCountryRule].self, forKey: .dnsCountryRules)) ?? d.dnsCountryRules
         notifications = try c.decodeIfPresent(Bool.self, forKey: .notifications) ?? d.notifications
         menuBarText = (try? c.decodeIfPresent(MenuBarText.self, forKey: .menuBarText)) ?? d.menuBarText
+        journalDays = (try? c.decodeIfPresent(Int.self, forKey: .journalDays)) ?? d.journalDays
     }
 }
 

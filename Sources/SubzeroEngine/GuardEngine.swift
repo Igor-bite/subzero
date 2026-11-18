@@ -73,6 +73,8 @@ public final class GuardEngine {
     public private(set) var safariError: String?
     /// Updated every tick so countdowns refresh.
     public private(set) var now = Date()
+    /// History of statuses, IP changes, freezes and kills.
+    public let journal: Journal
 
     /// Called on the main actor for every `GuardEvent`.
     @ObservationIgnored
@@ -112,6 +114,14 @@ public final class GuardEngine {
     @ObservationIgnored private var notifiedDNSResolver: IPAddress?
     @ObservationIgnored private var activeChecks = 0
     @ObservationIgnored private var started = false
+    /// Last status written to the journal.
+    @ObservationIgnored private var journalStatus: JournalEvent?
+    /// Last external IP written to the journal during this run.
+    @ObservationIgnored private var journalIP: IPAddress?
+    /// Apps and sites the journal considers frozen right now.
+    @ObservationIgnored private var journalFrozen: Set<String> = []
+    /// Targets killed recently: their disappearance is not a separate journal entry.
+    @ObservationIgnored private var journalKilled: [String: Date] = [:]
 
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var ticker: Timer?
@@ -124,6 +134,7 @@ public final class GuardEngine {
     ///   - probe: source of network observations.
     ///   - processes: process listing and signals.
     ///   - safari: link to the Safari extension; `nil` leaves Safari alone.
+    ///   - journal: where the history is kept; `nil` keeps it in memory only.
     ///   - observesSystem: react to network changes and sleep/wake. Turn off in tests.
     public init(
         store: ConfigStore = .standard,
@@ -131,9 +142,11 @@ public final class GuardEngine {
         probe: any NetworkProbing = IPProbe(),
         processes: any ProcessControlling = SystemProcessController(),
         safari: (any SafariLinking)? = SafariChannel(),
+        journal: JournalStore? = JournalStore(),
         observesSystem: Bool = true
     ) {
         self.store = store
+        self.journal = Journal(store: journal)
         self.defaults = defaults
         self.probe = probe
         self.processes = processes
@@ -154,6 +167,10 @@ public final class GuardEngine {
     public func start() {
         guard !started else { return }
         started = true
+        journal.open(now: Date(), keepDays: config.journalDays)
+        journalStatus = nil
+        journalIP = nil
+        journalFrozen = []
 
         if observesSystem {
             let monitor = NetworkChangeMonitor { [weak self] _ in
@@ -197,6 +214,11 @@ public final class GuardEngine {
         frozenRuleIDs.removeAll()
         // Normal quit: Safari releases every tab (a crash leaves the heartbeat to go stale).
         try? safari?.publish(makeSafariCommand(active: false))
+        if !journalFrozen.isEmpty {
+            journal.record(.thawed(targets: journalFrozen.sorted(), manual: false))
+            journalFrozen = []
+        }
+        journal.close(now: Date())
     }
 
     // MARK: Derived state
@@ -381,6 +403,7 @@ public final class GuardEngine {
         }
         reconcile(force: true)
         lastHit = EnforcementHit(names: [name], kinds: [kind], at: Date(), kind: .freeze)
+        recordTargets(byUser: true)
     }
 
     public func freeze(_ app: ControlledApp) {
@@ -398,6 +421,7 @@ public final class GuardEngine {
         if app.state == .frozen {
             lastHit = EnforcementHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .thaw)
         }
+        recordTargets(byUser: true)
     }
 
     /// SIGKILL every process of the app right now.
@@ -410,6 +434,11 @@ public final class GuardEngine {
         frozenPIDs.subtract(victims.keys)
         reconcile(force: true)
         lastHit = EnforcementHit(names: [app.name], kinds: [app.kind], at: Date(), kind: .shatter)
+        if started, !victims.isEmpty {
+            noteKilled([app.name])
+            journal.record(.killed(targets: [app.name], cause: .manual))
+        }
+        recordTargets(byUser: true)
     }
 
     // MARK: User actions: Safari
@@ -423,6 +452,7 @@ public final class GuardEngine {
             saveManualSiteFreezes()
         }
         syncSafari(force: true)
+        recordTargets(byUser: true)
     }
 
     /// Unfreeze now. A protected site unfrozen during a block runs until the block ends.
@@ -433,6 +463,7 @@ public final class GuardEngine {
             siteOverrides.insert(site.id)
         }
         syncSafari(force: true)
+        recordTargets(byUser: true)
     }
 
     /// Close every Safari tab of the site right now.
@@ -441,6 +472,11 @@ public final class GuardEngine {
         saveManualSiteFreezes()
         siteCloseAt[site.id] = Date().timeIntervalSince1970
         syncSafari(force: true)
+        if started, site.tabCount > 0 {
+            noteKilled([site.label])
+            journal.record(.killed(targets: [site.label], cause: .manual))
+        }
+        recordTargets(byUser: true)
     }
 
     // MARK: Check loop
@@ -469,6 +505,10 @@ public final class GuardEngine {
         snapshot = snap
         lastCheck = Date()
         networkChangePending = false
+        if started, let ip = snap.primaryIP, ip != journalIP {
+            journalIP = ip
+            journal.record(.ipChanged(ip: ip.description, country: snap.countries[ip]))
+        }
         verdict = evaluate(snap, rules: config.allowRules, settings: config.policySettings)
         reportDNSWarningIfNeeded()
         tick()
@@ -481,6 +521,9 @@ public final class GuardEngine {
         }
         guard notifiedDNSResolver != leak.resolver else { return }
         notifiedDNSResolver = leak.resolver
+        if started {
+            journal.record(.dnsWarning(resolver: leak.resolver.description, country: leak.country))
+        }
         emit(.dnsWarning(leak))
     }
 
@@ -520,6 +563,9 @@ public final class GuardEngine {
         overrides.formIntersection(enabledIDs)
         siteOverrides.formIntersection(config.safariSites)
         guard started else { return }
+        if old.journalDays != config.journalDays {
+            journal.prune(now: Date(), keepDays: config.journalDays)
+        }
         if old.checkIPv6 != config.checkIPv6 || old.checkInterval != config.checkInterval
             || old.minAgree != config.minAgree || old.policySettings.needsDNS != config.policySettings.needsDNS {
             requestCheck()
@@ -602,6 +648,9 @@ public final class GuardEngine {
             emit(.resumed(ip: ip, country: ip.flatMap { snapshot?.countries[$0] }))
         }
         announceIfNeeded()
+        recordStatus()
+        recordTargets()
+        journal.heartbeat(now: now, keepDays: config.journalDays)
     }
 
     private func reconcile(action: EnforcementAction = .none, force: Bool) {
@@ -633,6 +682,8 @@ public final class GuardEngine {
             }
             killedNames += closeBlockedSites()
             if !killedNames.isEmpty {
+                noteKilled(killedNames)
+                journal.record(.killed(targets: killedNames, cause: killsImmediately ? .dnsLeak : .graceExpired))
                 emit(.killed(apps: killedNames, cause: killsImmediately ? .dnsLeak : .graceExpired))
             }
         }
@@ -699,6 +750,78 @@ public final class GuardEngine {
         guard !announcedBlock, case .blocked(let reason) = phase, hasFrozenTargets else { return }
         announcedBlock = true
         emit(.blocked(reason, apps: frozenAppNames + frozenSiteNames))
+    }
+
+    // MARK: Journal
+
+    /// Status as the journal sees it: like `phase`, plus sleep.
+    private var currentJournalStatus: JournalEvent {
+        if let until = pausedUntil, until > now {
+            return .status(.paused, until: until == .distantFuture ? nil : until)
+        }
+        if sleeping { return .status(.asleep) }
+        if networkChangePending { return .status(.checking) }
+        switch verdict {
+        case .none: return .status(.checking)
+        case .allowed: return .status(.protected)
+        case .blocked(let reason): return .status(.blocked, block: JournalBlock(reason))
+        }
+    }
+
+    private func recordStatus() {
+        let status = currentJournalStatus
+        guard status != journalStatus else { return }
+        journalStatus = status
+        journal.record(status, at: now)
+    }
+
+    private func noteKilled(_ names: [String]) {
+        let at = Date()
+        for name in names { journalKilled[name] = at }
+    }
+
+    /// Writes freezes and releases of apps and sites since the last call.
+    ///
+    /// The short fail-closed freeze while the IP is re-checked (start, network change,
+    /// wake) is not written: while checking, an app keeps the state the journal gave it.
+    /// - Parameter byUser: releases come from the user's action.
+    private func recordTargets(byUser: Bool = false) {
+        guard started else { return }
+        let at = Date()
+        journalKilled = journalKilled.filter { at.timeIntervalSince($0.value) < 30 }
+        let checking = if case .checking = phase { true } else { false }
+
+        var current: [String: (state: ControlledApp.State, manual: Bool)] = [:]
+        for app in controlledApps { current[app.name] = (app.state, app.isManuallyFrozen) }
+        for site in controlledSites { current[site.label] = (site.state, site.isManuallyFrozen) }
+
+        var frozen = Set<String>()
+        var frozenAuto: [String] = [], frozenManual: [String] = [], thawed: [String] = [], exited: [String] = []
+        for (name, info) in current {
+            let was = journalFrozen.contains(name)
+            var isFrozen = info.state == .frozen
+            if isFrozen, !info.manual, checking { isFrozen = was }
+            if isFrozen { frozen.insert(name) }
+            if isFrozen, !was {
+                if info.manual { frozenManual.append(name) } else { frozenAuto.append(name) }
+            } else if !isFrozen, was {
+                if info.state == .running {
+                    thawed.append(name)
+                } else if journalKilled[name] == nil {
+                    exited.append(name)
+                }
+            }
+        }
+        // Gone from the list while frozen (manual freeze lifted, rule removed): it runs again.
+        for name in journalFrozen where current[name] == nil && journalKilled[name] == nil {
+            thawed.append(name)
+        }
+        journalFrozen = frozen
+
+        if !frozenAuto.isEmpty { journal.record(.frozen(targets: frozenAuto.sorted(), manual: false), at: at) }
+        if !frozenManual.isEmpty { journal.record(.frozen(targets: frozenManual.sorted(), manual: true), at: at) }
+        if !thawed.isEmpty { journal.record(.thawed(targets: thawed.sorted(), manual: byUser), at: at) }
+        if !exited.isEmpty { journal.record(.exited(targets: exited.sorted()), at: at) }
     }
 
     // MARK: Safari link

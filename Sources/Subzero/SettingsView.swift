@@ -29,6 +29,10 @@ struct SettingsView: View {
                 .tabItem { Label("Разрешено", systemImage: "globe.europe.africa.fill") }
             BehaviorTab(engine: engine)
                 .tabItem { Label("Поведение", systemImage: "slider.horizontal.3") }
+            JournalTab(engine: engine)
+                .tabItem { Label("Журнал", systemImage: "list.bullet.rectangle.fill") }
+            StatsTab(engine: engine)
+                .tabItem { Label("Статистика", systemImage: "chart.bar.xaxis") }
         }
         .scrollContentBackground(.hidden)
         .background(Color(red: 0.06, green: 0.08, blue: 0.15))

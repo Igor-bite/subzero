@@ -49,11 +49,11 @@ private func snapshot(_ ip: String, country: String) -> NetworkSnapshot {
 }
 
 @MainActor
-private func makeEngine(_ snap: NetworkSnapshot, processes: FakeProcesses) -> GuardEngine {
+private func makeEngine(_ snap: NetworkSnapshot, processes: FakeProcesses, journal: JournalStore? = nil) -> GuardEngine {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("subzero-test-\(UUID()).json")
     let engine = GuardEngine(
         store: ConfigStore(url: url), defaults: nil,
-        probe: FakeProbe(result: snap), processes: processes, safari: nil, observesSystem: false
+        probe: FakeProbe(result: snap), processes: processes, safari: nil, journal: journal, observesSystem: false
     )
     var config = GuardConfig()
     config.allowedCountries = ["NL"]
@@ -132,4 +132,80 @@ private func makeEngine(_ snap: NetworkSnapshot, processes: FakeProcesses) -> Gu
     #expect(processes.pids(sent: SIGCONT).isSuperset(of: [9001, 9002]))
     #expect(events.last == .resumed(ip: IPAddress("95.165.10.20"), country: "RU"))
     engine.shutdown()
+}
+
+// MARK: - Journal
+
+@MainActor
+private func events(_ engine: GuardEngine) -> [JournalEvent] {
+    engine.journal.entries.map(\.event)
+}
+
+@MainActor
+@Test func journalRecordsBlockFreezeAndRelease() async {
+    let processes = FakeProcesses(cursorProcesses)
+    let engine = makeEngine(snapshot("95.165.10.20", country: "RU"), processes: processes)
+
+    engine.start()
+    await engine.checkNow()
+    engine.allowCountry("RU")
+    engine.shutdown()
+
+    let block = JournalBlock(kind: .notAllowed, ip: "95.165.10.20", country: "RU")
+    #expect(events(engine) == [
+        .started,
+        // The fail-closed freeze while checking is not logged.
+        .status(.checking),
+        .ipChanged(ip: "95.165.10.20", country: "RU"),
+        .status(.blocked, block: block),
+        .frozen(targets: ["Cursor"], manual: false),
+        .status(.protected),
+        .thawed(targets: ["Cursor"], manual: false),
+        .stopped(clean: true),
+    ])
+}
+
+@MainActor
+@Test func journalRecordsManualFreezeAndKill() async {
+    let processes = FakeProcesses(cursorProcesses)
+    let engine = makeEngine(snapshot("185.10.10.10", country: "NL"), processes: processes)
+
+    engine.start()
+    await engine.checkNow()
+    engine.freezeManually(kind: .bundle(path: "/Applications/Safari.app"), name: "Safari")
+    let safari = engine.controlledApps.first { $0.name == "Safari" }!
+    engine.forceKill(safari)
+    engine.shutdown()
+
+    let tail = Array(events(engine).suffix(3))
+    #expect(tail == [
+        .frozen(targets: ["Safari"], manual: true),
+        .killed(targets: ["Safari"], cause: .manual),
+        .stopped(clean: true),
+    ])
+}
+
+@MainActor
+@Test func journalClosesACrashedRunAtLastAlive() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("subzero-journal-\(UUID())", isDirectory: true)
+    let store = JournalStore(url: dir.appendingPathComponent("journal.jsonl"))
+    let crashedAt = Date().addingTimeInterval(-600)
+    try store.append([
+        JournalEntry(at: crashedAt.addingTimeInterval(-300), event: .started),
+        JournalEntry(at: crashedAt.addingTimeInterval(-300), event: .status(.protected)),
+    ])
+    store.markAlive(at: crashedAt)
+
+    let engine = makeEngine(snapshot("185.10.10.10", country: "NL"), processes: FakeProcesses([]), journal: store)
+    engine.start()
+    engine.shutdown()
+
+    let saved = store.load()
+    #expect(saved[2].event == .stopped(clean: false))
+    // Seconds since 1970 on disk: allow rounding.
+    #expect(abs(saved[2].at.timeIntervalSince(crashedAt)) < 0.001)
+    #expect(saved[3].event == .started)
+    #expect(saved.last?.event == .stopped(clean: true))
+    let spans = JournalTimeline.statusSpans(saved, now: Date())
+    #expect(abs(spans[0].duration - 300) < 0.01)
 }
