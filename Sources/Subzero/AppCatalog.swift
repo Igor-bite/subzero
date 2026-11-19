@@ -64,9 +64,33 @@ enum AppCatalog {
     }
 
     static func icon(for kind: AppRuleKind) -> NSImage? {
-        guard case .bundle(let path) = kind, FileManager.default.fileExists(atPath: path) else { return nil }
-        return NSWorkspace.shared.icon(forFile: path)
+        switch kind {
+        case .bundle(let path):
+            guard FileManager.default.fileExists(atPath: path) else { return nil }
+            return NSWorkspace.shared.icon(forFile: path)
+        case .patterns(let patterns):
+            // Claude Code CLI borrows the Claude desktop icon when that app is installed.
+            guard isClaudeCLI(patterns), let path = claudeDesktopPath else { return nil }
+            return NSWorkspace.shared.icon(forFile: path)
+        }
     }
+
+    private static func isClaudeCLI(_ patterns: [String]) -> Bool {
+        patterns.contains { pattern in
+            let p = pattern.trimmingCharacters(in: .whitespaces)
+            return p == "claude" || p.contains("@anthropic-ai/claude-code") || p.contains("/.local/share/claude/")
+        }
+    }
+
+    /// Claude desktop bundle, looked up once: icons are drawn on every frame of the arcade animations.
+    private static let claudeDesktopPath: String? = {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.anthropic.claudefordesktop") {
+            return url.path
+        }
+        return searchDirectories
+            .map { $0.appendingPathComponent("Claude.app").path }
+            .first { FileManager.default.fileExists(atPath: $0) }
+    }()
 
     struct Candidate {
         let name: String
