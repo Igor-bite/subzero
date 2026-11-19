@@ -27,19 +27,20 @@ final class SafariExtension {
     func refresh() {
         guard let identifier, Date().timeIntervalSince(lastRefresh) > 5 else { return }
         lastRefresh = Date()
-        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: identifier) { state, _ in
-            let enabled = state?.isEnabled
-            Task { @MainActor in SafariExtension.shared.isEnabled = enabled }
+        // Async APIs, not completion handlers: Safari calls those on its XPC queue, and a
+        // closure written here inherits @MainActor isolation — Swift 6 traps on that mismatch.
+        Task {
+            let state = try? await SFSafariExtensionManager.stateOfSafariExtension(withIdentifier: identifier)
+            isEnabled = state?.isEnabled
         }
     }
 
     func openSafariSettings() {
         guard let identifier else { return }
-        SFSafariApplication.showPreferencesForExtension(withIdentifier: identifier) { _ in
-            Task { @MainActor in
-                SafariExtension.shared.lastRefresh = .distantPast
-                SafariExtension.shared.refresh()
-            }
+        Task {
+            try? await SFSafariApplication.showPreferencesForExtension(withIdentifier: identifier)
+            lastRefresh = .distantPast
+            refresh()
         }
     }
 

@@ -12,7 +12,8 @@ final class Notifier {
 
     func requestAuthorizationIfNeeded() {
         guard enabled, available else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Async API: a completion closure here would be @MainActor yet called off the main queue.
+        Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) }
     }
 
     func post(title: String, body: String) {
