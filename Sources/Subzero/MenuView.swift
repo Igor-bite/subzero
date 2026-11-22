@@ -15,6 +15,10 @@ struct MenuView: View {
         return max(300, screen - 24)
     }
 
+    private var panelHeight: CGFloat? {
+        contentHeight > 0 ? min(contentHeight, maxHeight) : nil
+    }
+
     var body: some View {
         ScrollView(.vertical) {
             content
@@ -22,7 +26,8 @@ struct MenuView: View {
         }
         .scrollIndicators(.automatic)
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 350, height: contentHeight > 0 ? min(contentHeight, maxHeight) : nil)
+        .frame(width: 350, height: panelHeight)
+        .background(PanelHeightSync(height: panelHeight))
         .background(LinearGradient(colors: [Arcade.night, Color(red: 0.06, green: 0.08, blue: 0.15)], startPoint: .top, endPoint: .bottom))
         .environment(\.colorScheme, .dark)
         .tint(Arcade.ice)
@@ -50,6 +55,29 @@ struct MenuView: View {
     private func openSettings() {
         openWindow(id: SettingsView.windowID)
         NSApp.activate()
+    }
+}
+
+/// The MenuBarExtra panel takes its size when it opens and ignores later
+/// content changes, so expanding a process list would clip or leave a gap.
+/// Resize the panel by hand, keeping its top edge under the menu bar.
+private struct PanelHeightSync: NSViewRepresentable {
+    let height: CGFloat?
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard let height else { return }
+        // After the layout pass: the view may not be in the window yet.
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            var frame = window.frame
+            let delta = height - window.contentRect(forFrameRect: frame).height
+            guard abs(delta) > 0.5 else { return }
+            frame.size.height += delta
+            frame.origin.y -= delta
+            window.setFrame(frame, display: true)
+        }
     }
 }
 
